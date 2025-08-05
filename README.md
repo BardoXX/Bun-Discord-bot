@@ -9,7 +9,7 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
   * **Fast Performance**: Thanks to Bun, the bot is quick and efficient.
   * **Easy to Use**: Simple to set up and configure for your Discord server.
   * **Modular Structure**: The code is well-organized, making it easy to add new commands.
-
+  * **Bun Sqlite**: it will create automatically a file called bot.db for database connections.
 ## Requirements
 
   * **Node.js** (latest version)
