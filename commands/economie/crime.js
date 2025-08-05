@@ -22,11 +22,11 @@ export default {
         const guildId = interaction.guild.id;
 
         // Check user data
-        let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
+        let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
         let userData = stmt.get(userId, guildId);
 
         if (!userData) {
-            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+            stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
             stmt.run(userId, guildId);
             userData = { balance: 0, bank: 0, last_crime: null };
         }
@@ -59,7 +59,7 @@ export default {
         if (success) {
             const reward = Math.floor(Math.random() * (crime.maxReward - crime.minReward + 1)) + crime.minReward;
             
-            stmt = db.prepare('UPDATE users SET balance = balance + ?, last_crime = ? WHERE id = ? AND guild_id = ?');
+            stmt = db.prepare('UPDATE users SET balance = balance + ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
             stmt.run(reward, now.toISOString(), userId, guildId);
 
             embed = new EmbedBuilder()
@@ -76,7 +76,7 @@ export default {
             const fine = Math.floor(Math.random() * (crime.maxFine - crime.minFine + 1)) + crime.minFine;
             const actualFine = Math.min(fine, userData.balance); // Can't pay more than they have
             
-            stmt = db.prepare('UPDATE users SET balance = balance - ?, last_crime = ? WHERE id = ? AND guild_id = ?');
+            stmt = db.prepare('UPDATE users SET balance = balance - ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
             stmt.run(actualFine, now.toISOString(), userId, guildId);
 
             embed = new EmbedBuilder()

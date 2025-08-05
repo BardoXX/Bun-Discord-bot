@@ -8,7 +8,7 @@ export default {
         .addIntegerOption(option =>
             option.setName('bedrag')
                 .setDescription('Het bedrag om te storten (of "all" voor alles)')
-                .setRequired(true)
+                .setRequired(false) 
                 .setMinValue(1))
         .addStringOption(option =>
             option.setName('all')
@@ -16,14 +16,16 @@ export default {
                 .addChoices({ name: 'Alles', value: 'all' })),
 
     async execute(interaction) {
+        // BELANGRIJKE STAP: Voeg dit toe aan het begin van je functie
+        await interaction.deferReply(); 
+        
         const db = interaction.client.db;
         const userId = interaction.user.id;
         const guildId = interaction.guild.id;
         
-        const amount = interaction.options.getInteger('bedrag');
+        let amount = interaction.options.getInteger('bedrag');
         const all = interaction.options.getString('all');
 
-        // Get user data
         let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
         let userData = stmt.get(userId, guildId);
 
@@ -37,8 +39,17 @@ export default {
         
         if (all === 'all') {
             depositAmount = userData.balance;
-        } else {
+        } else if (amount) {
             depositAmount = amount;
+        } else {
+            const embed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Fout')
+                .setDescription('Je moet een bedrag of de optie "alles" opgeven!')
+                .setTimestamp();
+            
+            await interaction.editReply({ embeds: [embed] });
+            return;
         }
 
         if (depositAmount <= 0) {
@@ -48,7 +59,7 @@ export default {
                 .setDescription('Je hebt geen geld om te storten!')
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
             return;
         }
 
@@ -56,28 +67,31 @@ export default {
             const embed = new EmbedBuilder()
                 .setColor('#ff0000')
                 .setTitle('❌ Onvoldoende Saldo')
-                .setDescription(`Je hebt niet genoeg geld! Je hebt maar €${userData.balance}.`)
+                .setDescription(`Je hebt niet genoeg geld! Je hebt maar €${userData.balance.toLocaleString()}.`)
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
             return;
         }
 
-        // Update balance
+        // Update de balans in de database
         stmt = db.prepare('UPDATE users SET balance = balance - ?, bank = bank + ? WHERE id = ? AND guild_id = ?');
         stmt.run(depositAmount, depositAmount, userId, guildId);
+
+        const newBalance = userData.balance - depositAmount;
+        const newBank = userData.bank + depositAmount;
 
         const embed = new EmbedBuilder()
             .setColor('#00ff00')
             .setTitle('🏦 Storting Succesvol')
             .setDescription(`Je hebt **€${depositAmount.toLocaleString()}** op je bankrekening gestort!`)
             .addFields(
-                { name: '💵 Nieuw Contant Saldo', value: `€${(userData.balance - depositAmount).toLocaleString()}`, inline: true },
-                { name: '🏦 Nieuw Bank Saldo', value: `€${(userData.bank + depositAmount).toLocaleString()}`, inline: true }
+                { name: '💵 Nieuw Contant Saldo', value: `€${newBalance.toLocaleString()}`, inline: true },
+                { name: '🏦 Nieuw Bank Saldo', value: `€${newBank.toLocaleString()}`, inline: true }
             )
             .setFooter({ text: `${interaction.user.username} • Je geld is veilig in de bank` })
             .setTimestamp();
 
-        await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
     },
 };

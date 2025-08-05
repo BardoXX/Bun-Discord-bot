@@ -10,13 +10,11 @@ export default {
             subcommand
                 .setName('welkom')
                 .setDescription('Stel welkomstberichten in')
-                // Verplichte opties eerst
                 .addChannelOption(option =>
                     option.setName('kanaal')
                         .setDescription('Het kanaal voor welkomstberichten')
                         .addChannelTypes(ChannelType.GuildText)
                         .setRequired(true))
-                // Optionele opties daarna
                 .addRoleOption(option =>
                     option.setName('rol')
                         .setDescription('De rol die toegewezen moet worden aan nieuwe leden')
@@ -49,7 +47,6 @@ export default {
             subcommand
                 .setName('tickets')
                 .setDescription('Stel ticket systeem in')
-                // Verplichte opties eerst
                 .addChannelOption(option =>
                     option.setName('kanaal')
                         .setDescription('Het kanaal waar het ticket bericht komt')
@@ -60,7 +57,6 @@ export default {
                         .setDescription('De categorie waar tickets worden aangemaakt')
                         .addChannelTypes(ChannelType.GuildCategory)
                         .setRequired(true))
-                // Optionele opties daarna
                 .addRoleOption(option =>
                     option.setName('staff_rol')
                         .setDescription('De rol die tickets kan claimen')
@@ -81,8 +77,8 @@ export default {
                         .setRequired(true)))
         .addSubcommand(subcommand =>
             subcommand
-                .setName('birthday')
-                .setDescription('Stel verjaardag kanaal in')
+                .setName('birthday_channel')
+                .setDescription('Stel het kanaal in voor verjaardagsberichten')
                 .addChannelOption(option =>
                     option.setName('kanaal')
                         .setDescription('Het kanaal voor verjaardagen')
@@ -92,7 +88,6 @@ export default {
             subcommand
                 .setName('shop')
                 .setDescription('Shop instellingen beheren')
-                // Verplichte opties eerst
                 .addStringOption(option =>
                     option.setName('actie')
                         .setDescription('Wat wil je doen?')
@@ -210,14 +205,14 @@ export default {
                         option.setName('enabled')
                             .setDescription('Waarschuwingssysteem aan/uit')
                             .setRequired(true)))
-        
         .addSubcommand(subcommand =>
             subcommand
                 .setName('view')
                 .setDescription('Bekijk huidige configuratie')),
 
     async execute(interaction) {
-        await interaction.deferReply({ flags: 64 }); 
+        // Defer the reply immediately at the start
+        await interaction.deferReply({ ephemeral: true }); 
 
         const subcommand = interaction.options.getSubcommand();
         const db = interaction.client.db;
@@ -237,8 +232,8 @@ export default {
                 case 'tellen':
                     await handleCountingConfig(interaction, db);
                     break;
-                case 'birthday':
-                    await handleBirthdayConfig(interaction, db);
+                case 'birthday_channel':
+                    await handleBirthdayChannelConfig(interaction, db);
                     break;
                 case 'view':
                     await handleViewConfig(interaction, db);
@@ -274,19 +269,17 @@ export default {
         } catch (error) {
             console.error(`❌ [config] Error in subcommand ${subcommand}:`, error);
             
-            // Check if we can still respond
-            if (!interaction.replied) {
-                try {
-                    const errorEmbed = new EmbedBuilder()
-                        .setColor('#ff0000')
-                        .setTitle('❌ Er is een fout opgetreden')
-                        .setDescription('Er is een onverwachte fout opgetreden bij het uitvoeren van dit commando. Probeer het later opnieuw.')
-                        .setTimestamp();
+            const errorEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Er is een fout opgetreden')
+                .setDescription('Er is een onverwachte fout opgetreden bij het uitvoeren van dit commando. Probeer het later opnieuw.')
+                .setTimestamp();
 
-                    await interaction.editReply({ embeds: [errorEmbed] });
-                } catch (replyError) {
-                    console.error('❌ [config] Failed to send error message:', replyError.message);
-                }
+            // Check if the interaction is still available and not replied to
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
+            } else {
+                await interaction.editReply({ embeds: [errorEmbed] });
             }
         }
     },
@@ -295,8 +288,31 @@ export default {
 async function ensureConfigTableExists(db) {
     try {
         db.prepare(`
+            CREATE TABLE IF NOT EXISTS shop_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                price INTEGER NOT NULL,
+                category TEXT DEFAULT 'Other',
+                type TEXT DEFAULT 'other',
+                data TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `).run();
+
+        db.prepare(`
             CREATE TABLE IF NOT EXISTS guild_config (
                 guild_id TEXT PRIMARY KEY
+            )
+        `).run();
+
+        db.prepare(`
+            CREATE TABLE IF NOT EXISTS welcome_logs (
+                user_id TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                welcomed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, guild_id)
             )
         `).run();
         
@@ -324,13 +340,12 @@ async function ensureConfigTableExists(db) {
             { name: 'member_count_channel', type: 'TEXT' },
             { name: 'member_count_format', type: 'TEXT' },
             { name: 'invites_enabled', type: 'INTEGER' },
-            { name: 'invite_log_channel', type: 'TEXT' }
+            { name: 'invite_log_channel', type: 'TEXT' },
+            { name: 'warns_enabled', type: 'INTEGER' }
         ];
 
-        // Get existing columns from table
         const existingColumns = db.prepare('PRAGMA table_info(guild_config)').all().map(c => c.name);
 
-        // Add missing columns
         for (const col of columns) {
             if (!existingColumns.includes(col.name)) {
                 console.log(`📊 [config] Adding missing column "${col.name}" to guild_config table.`);
@@ -338,9 +353,11 @@ async function ensureConfigTableExists(db) {
             }
         }
         
-        // Create additional tables for leveling system
         createLevelingTables(db);
         createInviteTrackingTables(db);
+        createBirthdayTable(db);
+        
+        console.log('✅ [config] guild_config table is up-to-date');
         
     } catch (e) {
         console.error('❌ [config] Error ensuring guild_config table exists:', e);
@@ -409,6 +426,19 @@ function createInviteTrackingTables(db) {
             invites INTEGER DEFAULT 0,
             fake_invites INTEGER DEFAULT 0,
             left_invites INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, guild_id)
+        )
+    `).run();
+}
+
+function createBirthdayTable(db) {
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS user_birthdays (
+            user_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
+            birth_date TEXT NOT NULL,
+            year INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id, guild_id)
         )
     `).run();
@@ -520,25 +550,42 @@ async function handleCountingConfig(interaction, db) {
     await interaction.editReply({ embeds: [embed] });
 }
 
-async function handleBirthdayConfig(interaction, db) {
+async function handleBirthdayChannelConfig(interaction, db) {
     const channel = interaction.options.getChannel('kanaal');
 
-    const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, birthday_channel) 
-        VALUES (?, ?)
-    `);
-    
-    stmt.run(interaction.guild.id, channel.id);
+    try {
+        // Ensure the column exists before inserting
+        const stmt = db.prepare(`
+            INSERT OR REPLACE INTO guild_config (guild_id, birthday_channel) 
+            VALUES (?, ?)
+        `);
+        
+        stmt.run(interaction.guild.id, channel.id);
 
-    const embed = new EmbedBuilder()
-        .setColor('#00ff00')
-        .setTitle('🎂 Verjaardag Kanaal Configuratie')
-        .addFields(
-            { name: 'Kanaal', value: `${channel}`, inline: true }
-        )
-        .setTimestamp();
+        console.log(`🎂 [config] Birthday channel set to ${channel.name} (${channel.id}) for guild ${interaction.guild.name}`);
 
-    await interaction.editReply({ embeds: [embed] });
+        const embed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('🎂 Verjaardag Kanaal Configuratie')
+            .addFields(
+                { name: 'Kanaal', value: `${channel}`, inline: true }
+            )
+            .setDescription('Het verjaardag kanaal is ingesteld! Gebruik `/birthday set` om je verjaardag in te stellen.')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+        
+    } catch (error) {
+        console.error('❌ [config] Error setting birthday channel:', error);
+        
+        const errorEmbed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Fout')
+            .setDescription('Er is een fout opgetreden bij het instellen van het verjaardag kanaal.')
+            .setTimestamp();
+            
+        await interaction.editReply({ embeds: [errorEmbed] });
+    }
 }
 
 async function handleShopConfig(interaction, db) {
@@ -907,6 +954,14 @@ async function handleViewConfig(interaction, db) {
         });
     }
 
+    if (config.warns_enabled !== null) {
+        fields.push({
+            name: '⚠️ Waarschuwingen',
+            value: `Status: ${config.warns_enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld'}`,
+            inline: false
+        });
+    }
+
     if (fields.length === 0) {
         embed.setDescription('Geen modules geconfigureerd.');
     } else {
@@ -921,9 +976,8 @@ async function handleWarnsConfig(interaction, db) {
     const enabled = interaction.options.getBoolean('enabled');
 
     const stmt = db.prepare(`
-        INSERT INTO guild_config (guild_id, warns_enabled)
+        INSERT OR REPLACE INTO guild_config (guild_id, warns_enabled)
         VALUES (?, ?)
-        ON CONFLICT(guild_id) DO UPDATE SET warns_enabled = excluded.warns_enabled
     `);
     stmt.run(guildId, enabled ? 1 : 0);
 

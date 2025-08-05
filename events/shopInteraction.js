@@ -1,3 +1,4 @@
+// commands/events/shopInteraction.js
 import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 export const name = 'shopInteraction';
@@ -6,6 +7,11 @@ export async function handleShopInteraction(interaction) {
     const startTime = Date.now();
     
     try {
+        // DeferUpdate wordt één keer aan het begin uitgevoerd voor alle component-interacties
+        if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferUpdate();
+        }
+
         const db = interaction.client.db;
         const userId = interaction.user.id;
         const guildId = interaction.guild.id;
@@ -16,46 +22,24 @@ export async function handleShopInteraction(interaction) {
             if (interaction.customId === 'shop_category') {
                 const selectedCategory = interaction.values[0];
                 console.log(`📂 [${name}] Category selected: ${selectedCategory}`);
-                
-                // Check if already deferred, if not defer now
-                if (!interaction.deferred && !interaction.replied) {
-                    await interaction.deferUpdate();
-                }
-                await showCategoryItems(interaction, selectedCategory, db, guildId);
+                await showCategoryItems(interaction, selectedCategory, db, guildId, userId);
             } else if (interaction.customId === 'shop_item_select') {
                 const selectedItemId = interaction.values[0];
                 console.log(`📦 [${name}] Item selected: ${selectedItemId}`);
-                
-                if (!interaction.deferred && !interaction.replied) {
-                    await interaction.deferUpdate();
-                }
                 await showItemDetails(interaction, selectedItemId, db, guildId, userId);
             }
         } else if (interaction.isButton()) {
             if (interaction.customId.startsWith('shop_buy_')) {
-                // First acknowledge the interaction if not already done
-                if (!interaction.deferred && !interaction.replied) {
-                    await interaction.deferUpdate();
-                }
-                
                 const itemId = interaction.customId.replace('shop_buy_', '');
                 console.log(`💰 [${name}] Purchase attempt for item: ${itemId}`);
                 await buyItem(interaction, itemId, db, guildId, userId);
             } else if (interaction.customId === 'shop_back_to_categories') {
                 console.log(`🔙 [${name}] Returning to main shop`);
-                
-                if (!interaction.deferred && !interaction.replied) {
-                    await interaction.deferUpdate();
-                }
-                await showMainShop(interaction, db, guildId);
+                await showMainShop(interaction, db, guildId, userId);
             } else if (interaction.customId.startsWith('shop_back_to_category_')) {
                 const category = interaction.customId.replace('shop_back_to_category_', '');
                 console.log(`🔙 [${name}] Returning to category: ${category}`);
-                
-                if (!interaction.deferred && !interaction.replied) {
-                    await interaction.deferUpdate();
-                }
-                await showCategoryItems(interaction, category, db, guildId);
+                await showCategoryItems(interaction, category, db, guildId, userId);
             }
         }
 
@@ -74,12 +58,8 @@ export async function handleShopInteraction(interaction) {
             deferred: interaction.deferred
         });
         
-        // Only try to respond if we haven't already and it's not a known Discord API error
-        if (!interaction.replied && !interaction.deferred && 
-            error.code !== 10062 && // Unknown interaction
-            error.code !== 40060 && // Interaction has already been acknowledged
-            error.code !== 10008) {  // Unknown message
-            
+        // Alleen reageren als er nog geen reactie is verstuurd
+        if (!interaction.replied && !interaction.deferred) {
             try {
                 const errorEmbed = new EmbedBuilder()
                     .setColor('#ff0000')
@@ -87,7 +67,8 @@ export async function handleShopInteraction(interaction) {
                     .setDescription('Er is een fout opgetreden bij het verwerken van de shop interactie.')
                     .setTimestamp();
                 
-                await interaction.reply({ embeds: [errorEmbed], flags: 64 });
+                // Gebruik reply() met ephemeral: true voor een tijdelijke foutmelding
+                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
             } catch (replyError) {
                 console.error(`❌ [${name}] Failed to send error message:`, replyError.message);
             }
@@ -95,9 +76,20 @@ export async function handleShopInteraction(interaction) {
     }
 }
 
-async function showMainShop(interaction, db, guildId) {
+// Haal de balans op van de gebruiker (nieuwe helper-functie)
+async function getUserBalance(db, userId, guildId) {
+    let stmt = db.prepare('SELECT balance FROM users WHERE id = ? AND guild_id = ?');
+    let userData = stmt.get(userId, guildId);
+    return userData ? userData.balance : 0;
+}
+
+// showMainShop krijgt nu ook de userId mee
+async function showMainShop(interaction, db, guildId, userId) {
     console.log(`🏪 [${name}] Showing main shop for guild: ${interaction.guild.name}`);
     
+    // Haal de balans van de gebruiker op
+    const userBalance = await getUserBalance(db, userId, guildId);
+
     let stmt = db.prepare('SELECT * FROM shop_items WHERE guild_id = ? ORDER BY category, price');
     let shopItems = stmt.all(guildId);
 
@@ -114,7 +106,6 @@ async function showMainShop(interaction, db, guildId) {
         return;
     }
 
-    // Group items by category
     const categories = {};
     shopItems.forEach(item => {
         if (!categories[item.category]) {
@@ -125,7 +116,6 @@ async function showMainShop(interaction, db, guildId) {
 
     console.log(`📊 [${name}] Found ${Object.keys(categories).length} categories with ${shopItems.length} total items`);
 
-    // Create category select menu
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('shop_category')
         .setPlaceholder('Kies een categorie...');
@@ -144,7 +134,7 @@ async function showMainShop(interaction, db, guildId) {
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
         .setTitle('🏪 Server Shop')
-        .setDescription('Welkom bij de shop! Kies een categorie om de beschikbare items te bekijken.')
+        .setDescription(`Welkom bij de shop! Je hebt momenteel **€${userBalance.toLocaleString()}** contant. Kies een categorie om de beschikbare items te bekijken.`)
         .addFields(
             Object.keys(categories).map(category => ({
                 name: `${getCategoryEmoji(category)} ${category}`,
@@ -158,7 +148,11 @@ async function showMainShop(interaction, db, guildId) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-async function showCategoryItems(interaction, category, db, guildId) {
+// showCategoryItems krijgt nu ook de userId mee en een optioneel succesbericht
+async function showCategoryItems(interaction, category, db, guildId, userId, successMessage = null) {
+    // Haal de balans van de gebruiker op
+    const userBalance = await getUserBalance(db, userId, guildId);
+
     let stmt = db.prepare('SELECT * FROM shop_items WHERE guild_id = ? AND category = ? ORDER BY price');
     let items = stmt.all(guildId, category);
 
@@ -173,7 +167,6 @@ async function showCategoryItems(interaction, category, db, guildId) {
         return;
     }
 
-    // Create item select menu
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('shop_item_select')
         .setPlaceholder('Kies een item...');
@@ -182,12 +175,11 @@ async function showCategoryItems(interaction, category, db, guildId) {
         selectMenu.addOptions({
             label: item.name,
             value: item.id.toString(),
-            description: `💰 ${item.price} coins`,
+            description: `💰 €${item.price.toLocaleString()}`,
             emoji: '📦'
         });
     });
 
-    // Back button
     const backButton = new ButtonBuilder()
         .setCustomId('shop_back_to_categories')
         .setLabel('🔙 Terug naar categorieën')
@@ -199,11 +191,12 @@ async function showCategoryItems(interaction, category, db, guildId) {
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
         .setTitle(`🏪 ${category}`)
-        .setDescription(`Items in de categorie **${category}**:`)
+        // Voeg hier de succesmelding toe als die bestaat
+        .setDescription(`${successMessage ? successMessage + '\n\n' : ''}Items in de categorie **${category}**: \n\n**Jouw saldo**: €${userBalance.toLocaleString()}`)
         .addFields(
             items.map(item => ({
                 name: `📦 ${item.name}`,
-                value: `💰 ${item.price} coins${item.description ? `\n${item.description}` : ''}`,
+                value: `💰 €${item.price.toLocaleString()}${item.description ? `\n${item.description}` : ''}`,
                 inline: true
             }))
         )
@@ -228,15 +221,14 @@ async function showItemDetails(interaction, itemId, db, guildId, userId) {
         return;
     }
 
-    // Get user's current balance
-    stmt = db.prepare('SELECT balance FROM economy WHERE user_id = ? AND guild_id = ?');
-    let economy = stmt.get(userId, guildId);
-    const userBalance = economy ? economy.balance : 0;
-
-    // Create buttons
+    // Gebruik de correcte tabelnaam 'users'
+    stmt = db.prepare('SELECT balance FROM users WHERE id = ? AND guild_id = ?');
+    let userData = stmt.get(userId, guildId);
+    const userBalance = userData ? userData.balance : 0;
+    
     const buyButton = new ButtonBuilder()
         .setCustomId(`shop_buy_${itemId}`)
-        .setLabel(`💰 Koop voor ${item.price} coins`)
+        .setLabel(`💰 Koop voor €${item.price.toLocaleString()}`)
         .setStyle(userBalance >= item.price ? ButtonStyle.Success : ButtonStyle.Danger)
         .setDisabled(userBalance < item.price);
 
@@ -252,9 +244,9 @@ async function showItemDetails(interaction, itemId, db, guildId, userId) {
         .setTitle(`📦 ${item.name}`)
         .setDescription(item.description || 'Geen beschrijving beschikbaar.')
         .addFields(
-            { name: '💰 Prijs', value: `${item.price} coins`, inline: true },
+            { name: '💰 Prijs', value: `€${item.price.toLocaleString()}`, inline: true },
             { name: '📂 Categorie', value: item.category, inline: true },
-            { name: '💳 Jouw saldo', value: `${userBalance} coins`, inline: true }
+            { name: '💳 Jouw saldo', value: `€${userBalance.toLocaleString()}`, inline: true }
         )
         .setFooter({ 
             text: userBalance >= item.price ? 'Je hebt genoeg coins!' : 'Je hebt niet genoeg coins.' 
@@ -267,7 +259,6 @@ async function showItemDetails(interaction, itemId, db, guildId, userId) {
 async function buyItem(interaction, itemId, db, guildId, userId) {
     console.log(`💳 [${name}] Processing purchase for item ${itemId} by user ${interaction.user.tag}`);
     
-    // Get item details
     let stmt = db.prepare('SELECT * FROM shop_items WHERE id = ? AND guild_id = ?');
     let item = stmt.get(itemId, guildId);
 
@@ -285,11 +276,11 @@ async function buyItem(interaction, itemId, db, guildId, userId) {
     }
 
     console.log(`📦 [${name}] Found item: ${item.name} (${item.price} coins)`);
-
-    // Get user's current balance
-    stmt = db.prepare('SELECT balance FROM economy WHERE user_id = ? AND guild_id = ?');
-    let economy = stmt.get(userId, guildId);
-    const userBalance = economy ? economy.balance : 0;
+    
+    // Gebruik de correcte tabelnaam 'users' en haal de balans hier op
+    stmt = db.prepare('SELECT balance FROM users WHERE id = ? AND guild_id = ?');
+    let userData = stmt.get(userId, guildId);
+    const userBalance = userData ? userData.balance : 0;
 
     console.log(`💰 [${name}] User balance: ${userBalance} coins, item price: ${item.price} coins`);
 
@@ -299,10 +290,10 @@ async function buyItem(interaction, itemId, db, guildId, userId) {
         const errorEmbed = new EmbedBuilder()
             .setColor('#ff0000')
             .setTitle('❌ Onvoldoende Saldo')
-            .setDescription(`Je hebt **${item.price - userBalance}** coins te weinig om dit item te kopen.`)
+            .setDescription(`Je hebt **€${(item.price - userBalance).toLocaleString()}** te weinig om dit item te kopen.`)
             .addFields(
-                { name: '💰 Prijs', value: `${item.price} coins`, inline: true },
-                { name: '💳 Jouw saldo', value: `${userBalance} coins`, inline: true }
+                { name: '💰 Prijs', value: `€${item.price.toLocaleString()}`, inline: true },
+                { name: '💳 Jouw saldo', value: `€${userBalance.toLocaleString()}`, inline: true }
             )
             .setTimestamp();
 
@@ -313,29 +304,26 @@ async function buyItem(interaction, itemId, db, guildId, userId) {
     try {
         console.log(`🔄 [${name}] Starting database transaction`);
         
-        // Start transaction
         db.exec('BEGIN TRANSACTION');
 
-        // Deduct money from user
-        if (economy) {
-            stmt = db.prepare('UPDATE economy SET balance = balance - ? WHERE user_id = ? AND guild_id = ?');
+        if (userData) {
+            stmt = db.prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND guild_id = ?');
             stmt.run(item.price, userId, guildId);
         } else {
-            stmt = db.prepare('INSERT INTO economy (user_id, guild_id, balance) VALUES (?, ?, ?)');
+            // Dit zou eigenlijk niet moeten gebeuren, maar voor de zekerheid
+            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, ?, 0)');
             stmt.run(userId, guildId, -item.price);
         }
 
-        // Add item to user's inventory (including boosters)
         stmt = db.prepare('INSERT OR IGNORE INTO user_inventory (user_id, guild_id, item_id, quantity) VALUES (?, ?, ?, 0)');
         stmt.run(userId, guildId, itemId);
         
         stmt = db.prepare('UPDATE user_inventory SET quantity = quantity + 1 WHERE user_id = ? AND guild_id = ? AND item_id = ?');
         stmt.run(userId, guildId, itemId);
 
-        // If it's a booster, add to user's active boosters
         if (item.type === 'multiplier' || item.category === 'Boosters') {
-            const multiplierValue = item.data ? parseFloat(item.data) : 1.5; // Default 1.5x multiplier
-            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours from now
+            const multiplierValue = item.data ? parseFloat(item.data) : 1.5;
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
             
             stmt = db.prepare(`
                 INSERT INTO user_boosters (user_id, guild_id, type, multiplier, expires_at, active)
@@ -344,44 +332,21 @@ async function buyItem(interaction, itemId, db, guildId, userId) {
             stmt.run(userId, guildId, 'xp', multiplierValue, expiresAt.toISOString());
         }
 
-        // Commit transaction
         db.exec('COMMIT');
         
         console.log(`✅ [${name}] Purchase completed successfully for ${interaction.user.tag}`);
 
-        const successEmbed = new EmbedBuilder()
-            .setColor('#00ff00')
-            .setTitle('✅ Aankoop Succesvol!')
-            .setDescription(`Je hebt succesvol **${item.name}** gekocht voor **${item.price}** coins!`)
-            .addFields(
-                { name: '📦 Item', value: item.name, inline: true },
-                { name: '💰 Betaald', value: `${item.price} coins`, inline: true },
-                { name: '💳 Nieuw saldo', value: `${userBalance - item.price} coins`, inline: true }
-            )
-            .setTimestamp();
+        const newBalance = userBalance - item.price;
+        let successMessage = `Je hebt succesvol **${item.name}** gekocht voor **€${item.price.toLocaleString()}**! Je nieuwe saldo is €${newBalance.toLocaleString()}.`;
 
-        // Add special message for boosters
         if (item.type === 'multiplier' || item.category === 'Boosters') {
-            successEmbed.addFields({
-                name: '⚡ Booster Geactiveerd!',
-                value: `Je XP booster is nu actief voor 24 uur!`,
-                inline: false
-            });
+            successMessage += '\n⚡ Je XP booster is nu actief voor 24 uur!';
         }
 
-        await interaction.editReply({ embeds: [successEmbed], components: [] });
-
-        // After 3 seconds, return to category view
-        setTimeout(async () => {
-            try {
-                await showCategoryItems(interaction, item.category, db, guildId);
-            } catch (error) {
-                console.error(`❌ [${name}] Error returning to category view:`, error.message);
-            }
-        }, 3000);
+        // VERWIJDER DE SETTIMEOUT EN ROEP showCategoryItems DIRECT AAN
+        await showCategoryItems(interaction, item.category, db, guildId, userId, successMessage);
 
     } catch (error) {
-        // Rollback transaction on error
         try {
             db.exec('ROLLBACK');
         } catch (rollbackError) {

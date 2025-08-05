@@ -1,6 +1,7 @@
 // index.js - Main entry point
 import { Client, GatewayIntentBits, Collection, REST, Routes } from 'discord.js';
-import { initializeDatabase, default as db } from 'commands/utils/database.js';
+import { initializeDatabase, getDb } from 'commands/utils/database.js';
+import BirthdayScheduler from 'commands/utils/birthdayScheduler.js';
 import { readdirSync } from 'fs';
 import { join } from 'path';
 import Database from 'bun:sqlite';
@@ -17,6 +18,7 @@ const client = new Client({
 
 // Initialize database
 initializeDatabase();
+const db = getDb();
 
 
 // Collections for commands and events
@@ -24,6 +26,8 @@ client.commands = new Collection();
 client.db = db;
 
 console.log('📊 Database initialized with all required tables');
+
+const birthdayScheduler = new BirthdayScheduler(client, db);
 
 // Load commands from subdirectories
 const commandFolders = readdirSync('./commands');
@@ -92,7 +96,10 @@ if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
 client.once('ready', () => {
     console.log(`🤖 Bot is ready! Logged in as ${client.user.tag}`);
     deployCommands();
+    birthdayScheduler.start();
 });
+
+client.birthdayScheduler = birthdayScheduler;
 
 // Graceful shutdown
 process.on('SIGINT', () => {

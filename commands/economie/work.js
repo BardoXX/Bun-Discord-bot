@@ -26,11 +26,11 @@ export default {
         const requestedJob = interaction.options.getString('job');
 
         // Check user data
-        let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
+        let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
         let userData = stmt.get(userId, guildId);
 
         if (!userData) {
-            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+            stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
             stmt.run(userId, guildId);
             userData = { balance: 0, bank: 0, last_work: null };
         }
@@ -38,7 +38,7 @@ export default {
         // Check cooldown (1 hour)
         const now = new Date();
         const lastWork = userData.last_work ? new Date(userData.last_work) : null;
-        const cooldownTime = 60 * 60 * 1000; // 1 hour in milliseconds
+        const cooldownTime = 60 * 60 * 1000; // 1 uur in ms
 
         if (lastWork && (now - lastWork) < cooldownTime) {
             const timeLeft = cooldownTime - (now - lastWork);
@@ -54,7 +54,7 @@ export default {
             return;
         }
 
-        // Get user's available jobs (from inventory + default jobs)
+        // Verkrijg beschikbare jobs (default + unlocked via inventory)
         const inventoryStmt = db.prepare(`
             SELECT s.name AS item_name, s.data AS item_data, s.type AS item_type
             FROM user_inventory u
@@ -63,7 +63,6 @@ export default {
         `);
         const ownedJobs = inventoryStmt.all(userId, guildId);
 
-        // Parse owned job data
         const unlockedJobs = [...defaultJobs];
         ownedJobs.forEach(job => {
             if (job.item_data) {
@@ -75,8 +74,7 @@ export default {
                         max: jobData.max || 300,
                         level: jobData.level || 1
                     });
-                } catch (e) {
-                    // Fallback for simple data format
+                } catch {
                     unlockedJobs.push({
                         name: job.item_name,
                         min: 100,
@@ -87,13 +85,13 @@ export default {
             }
         });
 
-        // If user specified a job, check if they have it
+        // Job selectie
         let selectedJob;
         if (requestedJob) {
-            selectedJob = unlockedJobs.find(job => 
+            selectedJob = unlockedJobs.find(job =>
                 job.name.toLowerCase().includes(requestedJob.toLowerCase())
             );
-            
+
             if (!selectedJob) {
                 const availableJobs = unlockedJobs.map(job => `• ${job.name}`).join('\n');
                 const embed = new EmbedBuilder()
@@ -107,28 +105,25 @@ export default {
                 return;
             }
         } else {
-            // Random job from available jobs
             selectedJob = unlockedJobs[Math.floor(Math.random() * unlockedJobs.length)];
         }
 
-        // Calculate earnings with potential multipliers
+        // Bereken verdiensten met multipliers
         let baseEarnings = Math.floor(Math.random() * (selectedJob.max - selectedJob.min + 1)) + selectedJob.min;
-        
-        // Check for multiplier items
+
         const multiplierStmt = db.prepare(`
             SELECT item_data FROM user_inventory 
             WHERE user_id = ? AND guild_id = ? AND item_type = 'multiplier'
         `);
         const multipliers = multiplierStmt.all(userId, guildId);
-        
+
         let totalMultiplier = 1;
         multipliers.forEach(mult => {
             if (mult.item_data) {
                 try {
                     const multiplierData = JSON.parse(mult.item_data);
                     totalMultiplier += (multiplierData.value || 0);
-                } catch (e) {
-                    // Fallback for simple number format
+                } catch {
                     totalMultiplier += parseFloat(mult.item_data) || 0;
                 }
             }
@@ -136,8 +131,8 @@ export default {
 
         const finalEarnings = Math.floor(baseEarnings * totalMultiplier);
 
-        // Update user balance and last work time
-        stmt = db.prepare('UPDATE users SET balance = balance + ?, last_work = ? WHERE id = ? AND guild_id = ?');
+        // Update balans en last_work tijd
+        stmt = db.prepare('UPDATE users SET balance = balance + ?, last_work = ? WHERE user_id = ? AND guild_id = ?');
         stmt.run(finalEarnings, now.toISOString(), userId, guildId);
 
         const embed = new EmbedBuilder()
@@ -153,7 +148,6 @@ export default {
             .setFooter({ text: `${interaction.user.username} • ${selectedJob.level > 0 ? 'Premium Job!' : 'Standaard Job'}` })
             .setTimestamp();
 
-        // Show available jobs if this was a default job
         if (selectedJob.level === 0 && unlockedJobs.length > defaultJobs.length) {
             const premiumJobs = unlockedJobs.filter(job => job.level > 0);
             embed.addFields({

@@ -16,14 +16,11 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
-        // Begin met een 'defer reply' om aan te geven dat de bot bezig is.
-        // Dit is een best practice voor commando's die even kunnen duren.
         await interaction.deferReply({ flags: 64 });
 
         const target = interaction.options.getUser('gebruiker');
         const reason = interaction.options.getString('reden') || 'Geen reden opgegeven';
 
-        // Check if user can be kicked
         const member = await interaction.guild.members.fetch(target.id).catch(() => null);
         
         if (!member) {
@@ -33,7 +30,7 @@ export default {
                 .setDescription('Deze gebruiker is niet gevonden op de server.')
                 .setTimestamp();
 
-            await interaction.editReply({ embeds: [embed] }); // Gebruik editReply na deferReply
+            await interaction.editReply({ embeds: [embed] }); 
             return;
         }
 
@@ -71,7 +68,6 @@ export default {
         }
 
         try {
-            // Send DM to user before kicking
             try {
                 const dmEmbed = new EmbedBuilder()
                     .setColor('#ff9900')
@@ -86,7 +82,7 @@ export default {
 
                 await target.send({ embeds: [dmEmbed] });
             } catch (error) {
-                // User has DMs disabled, continue with kick
+                console.warn(`⚠️ [kick] Kan geen DM sturen naar ${target.tag}. Mogelijk heeft de gebruiker DMs uitgeschakeld.`);
             }
 
             // Kick the user
@@ -103,8 +99,10 @@ export default {
                 )
                 .setFooter({ text: `Kick uitgevoerd door ${interaction.user.tag}` })
                 .setTimestamp();
+            await interaction.channel.send({ embeds: [embed] });
 
-            // Gebruik editReply na een succesvolle kick
+            // Gebruik editReply() omdat we al hebben gedeferred
+            embed.setDescription(`✅ ${target.tag} is gekickt van de server.`);
             await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
