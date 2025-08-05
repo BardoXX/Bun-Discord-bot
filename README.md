@@ -6,10 +6,38 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 
 ## Features
 
-  * **Fast Performance**: Thanks to Bun, the bot is quick and efficient.
-  * **Easy to Use**: Simple to set up and configure for your Discord server.
-  * **Modular Structure**: The code is well-organized, making it easy to add new commands.
-  * **Bun Sqlite**: it will create automatically a file called bot.db for database connections.
+  **Moderatie**
+  - ban
+  - kick
+  - close
+  - kick
+  - warn
+  - welkom
+  -- alles is aanpasbaar via /config welkom
+  - Ticket Syteem
+  -- alles is aanpasbaar via /config ticket
+  -- Claim button 
+  -- close button
+  -- aparte /close functie,
+  -- Wanneer geen ticket kanaal krijg je ""Dit is geen ticket kanaal"" melding
+  
+  **Economie**
+  - balance 
+  - Crime
+  - Depost
+  - withdraw
+  - work
+  - shop 
+  - inventory
+  - depost
+  - withdraw
+  
+  **Levels**
+  - Levels aan zetten via /config level
+  - invite-log aan zetten via /config member_count
+  - Level = dit toont uw eigen level
+  - leaderbord = dit toont alle top 10 leden van de guild
+  - voice levels,
 ## Requirements
 
   * **Node.js** (latest version)
