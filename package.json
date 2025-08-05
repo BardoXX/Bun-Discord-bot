@@ -1,0 +1,17 @@
+{
+  "name": "discord-bot-bun",
+  "version": "1.0.0",
+  "description": "Moderne Discord bot met Bun",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.js",
+    "dev": "bun --hot run index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
