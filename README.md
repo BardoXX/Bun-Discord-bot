@@ -6,46 +6,49 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 
 ## Features
 
- **Moderatie**
- - ban
- - kick
- - close
- - kick
- - warn
- - welkom
- -- alles is aanpasbaar via /config welkom
- - Member Count
- - Ticket Syteem
- -- alles is aanpasbaar via /config ticket
- -- Claim button 
- -- close button
- -- aparte /close functie,
- -- Wanneer geen ticket kanaal krijg je ""Dit is geen ticket kanaal"" melding
- 
- **Economie**
- - balance 
- - Crime
- - Depost
- - withdraw
- - work
- - shop 
- - inventory
- - depost
- - withdraw
- - jobstats
- 
- 
- **Levels**
- - Levels aan zetten via /config level
- - invite-log aan zetten via /config member_count
- - Level = dit toont uw eigen level
- - leaderbord = dit toont alle top 10 leden van de guild
- - voice levels,
- 
- **Fun**
- - Birthday
- - tellen + /config opties
 
+**Moderatie**
+- ban
+- kick
+- close
+- kick
+- warn
+- welkom
+-- alles is aanpasbaar via /config welkom
+- Member Count
+- Ticket Syteem
+-- alles is aanpasbaar via /config ticket
+-- Claim button 
+-- close button
+-- aparte /close functie,
+-- Wanneer geen ticket kanaal krijg je ""Dit is geen ticket kanaal"" melding
+- Antispam = alles instelbaar via /config
+- Antiinvite = alles instelbaar via /config
+
+**Economie**
+- balance 
+- Crime
+- Depost
+- withdraw
+- work
+- shop 
+- inventory
+- depost
+- withdraw
+- jobstats
+
+
+**Levels**
+- Levels aan zetten via /config level
+- invite-log aan zetten via /config member_count
+- Level = dit toont uw eigen level
+- leaderbord = dit toont alle top 10 leden van de guild
+- voice levels,
+
+**Fun**
+- Birthday
+- tellen + /config opties
+  
 ## Requirements
 
   * **Node.js** (latest version)
