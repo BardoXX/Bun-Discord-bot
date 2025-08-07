@@ -1,26 +1,30 @@
 // events/messageCreate.js
 import { safeDbOperation, safeTransaction } from '../commands/utils/database.js';
+import { handleCountingMessage } from './countingHelper.js';
 
 export default {
     name: 'messageCreate',
     async execute(message) {
         if (message.author.bot) return;
-        
+
         const db = message.client.db;
         if (!db) return;
 
-        // Check if levels are enabled for this guild
         try {
+            await handleCountingMessage(message);
+            
+
             const config = safeDbOperation(() => {
                 const stmt = db.prepare('SELECT levels_enabled, level_up_channel, xp_per_message, message_cooldown FROM guild_config WHERE guild_id = ?');
                 return stmt.get(message.guild.id);
             });
 
-            if (!config || !config.levels_enabled) return;
-
-            await addXPToUser(message.author.id, message.guild.id, db, config, message);
+            if (config && config.levels_enabled) {
+                await addXPToUser(message.author.id, message.guild.id, db, config, message);
+            }
+            
         } catch (error) {
-            console.error('❌ [messageCreate] Error processing message for XP:', error);
+            console.error('❌ [messageCreate] Error processing message:', error);
         }
     }
 };
@@ -28,17 +32,15 @@ export default {
 async function addXPToUser(userId, guildId, db, config, message) {
     try {
         const xpToAdd = config.xp_per_message || 20;
-        const cooldown = (config.message_cooldown || 60) * 1000; // Convert to milliseconds
+        const cooldown = Number(config.message_cooldown || 60) * 1000; 
         
-        // Use safe transaction for all database operations
+
         const result = safeTransaction(() => {
             const now = new Date();
             
-            // Get current user data
             const selectStmt = db.prepare('SELECT * FROM user_levels WHERE user_id = ? AND guild_id = ?');
             let userData = selectStmt.get(userId, guildId);
             
-            // If user doesn't exist, create them
             if (!userData) {
                 const insertStmt = db.prepare(`
                     INSERT INTO user_levels (user_id, guild_id, xp, level, total_xp, last_message)
@@ -54,27 +56,23 @@ async function addXPToUser(userId, guildId, db, config, message) {
                 };
             }
             
-            // Check cooldown
             const lastMessage = new Date(userData.last_message);
             const timeDiff = now - lastMessage;
             
             if (timeDiff < cooldown) {
-                return null; // Still in cooldown
+                return null; 
             }
             
-            // Calculate new values
+
             const newTotalXP = userData.total_xp + xpToAdd;
             const newCurrentXP = userData.xp + xpToAdd;
             const currentLevel = userData.level;
             
-            // Calculate level
-            const newLevel = Math.floor(Math.sqrt(newTotalXP / 100));
+            const newLevel = Math.floor(Math.sqrt(Number(newTotalXP) / 100));
             const leveledUp = newLevel > currentLevel;
             
-            // If leveled up, reset current XP
-            const finalCurrentXP = leveledUp ? newCurrentXP - (currentLevel * currentLevel * 100) : newCurrentXP;
+            const finalCurrentXP = leveledUp ? newCurrentXP - (BigInt(currentLevel) * BigInt(currentLevel) * BigInt(100)) : newCurrentXP;
             
-            // Update database
             const updateStmt = db.prepare(`
                 UPDATE user_levels
                 SET xp = ?, level = ?, total_xp = ?, last_message = ?
@@ -91,10 +89,8 @@ async function addXPToUser(userId, guildId, db, config, message) {
             };
         });
         
-        // If no result (cooldown) or no level up, return
         if (!result || !result.leveledUp) return;
         
-        // Send level up message if configured
         if (config.level_up_channel) {
             try {
                 const levelUpChannel = message.guild.channels.cache.get(config.level_up_channel);
@@ -111,7 +107,6 @@ async function addXPToUser(userId, guildId, db, config, message) {
     } catch (error) {
         console.error('❌ [addXPToUser] Error:', error);
         
-        // Enhanced error logging for debugging
         if (error.code === 'SQLITE_BUSY') {
             console.error('❌ [addXPToUser] Database is locked - this should be resolved with the new safe operations');
         }

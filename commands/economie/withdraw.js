@@ -80,8 +80,8 @@ export default {
         stmt = db.prepare('UPDATE users SET balance = balance + ?, bank = bank - ? WHERE id = ? AND guild_id = ?');
         stmt.run(withdrawAmount, withdrawAmount, userId, guildId);
 
-        const newBalance = userData.balance + withdrawAmount;
-        const newBank = userData.bank - withdrawAmount;
+        const newBalance = BigInt(userData.balance) + BigInt(withdrawAmount);
+        const newBank = BigInt(userData.bank) - BigInt(withdrawAmount);
 
         const embed = new EmbedBuilder()
             .setColor('#00ff00')

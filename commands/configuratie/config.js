@@ -207,6 +207,24 @@ export default {
                             .setRequired(true)))
         .addSubcommand(subcommand =>
             subcommand
+                .setName('inventory')
+                .setDescription('Inventory systeem instellingen')
+                .addBooleanOption(option =>
+                    option.setName('enabled')
+                        .setDescription('Inventory systeem aan/uit')
+                        .setRequired(true))
+                .addBooleanOption(option =>
+                    option.setName('public_viewing')
+                        .setDescription('Mogen users elkaars inventory bekijken?')
+                        .setRequired(false))
+                .addIntegerOption(option =>
+                    option.setName('max_items_per_category')
+                        .setDescription('Maximum aantal items per categorie (0 = onbeperkt)')
+                        .setRequired(false)
+                        .setMinValue(0)
+                        .setMaxValue(100)))
+        .addSubcommand(subcommand =>
+            subcommand
                 .setName('view')
                 .setDescription('Bekijk huidige configuratie')),
 
@@ -253,6 +271,9 @@ export default {
                 case 'warns':
                     await handleWarnsConfig(interaction, db);
                     break;
+                case 'inventory':
+                    await handleInventoryConfig(interaction, db);
+                    break;
                 default:
                     console.error(`❌ [config] Unknown subcommand: ${subcommand}`);
                     const unknownEmbed = new EmbedBuilder()
@@ -296,7 +317,7 @@ async function ensureConfigTableExists(db) {
                 price INTEGER NOT NULL,
                 category TEXT DEFAULT 'Other',
                 type TEXT DEFAULT 'other',
-                data TEXT,
+                item_data TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `).run();
@@ -313,6 +334,21 @@ async function ensureConfigTableExists(db) {
                 guild_id TEXT NOT NULL,
                 welcomed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, guild_id)
+            )
+        `).run();
+
+        // Create user inventory table
+        db.prepare(`
+            CREATE TABLE IF NOT EXISTS user_inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                quantity INTEGER DEFAULT 1,
+                acquired_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                item_data TEXT,
+                FOREIGN KEY (item_id) REFERENCES shop_items (id),
+                UNIQUE(user_id, guild_id, item_id)
             )
         `).run();
         
@@ -341,7 +377,10 @@ async function ensureConfigTableExists(db) {
             { name: 'member_count_format', type: 'TEXT' },
             { name: 'invites_enabled', type: 'INTEGER' },
             { name: 'invite_log_channel', type: 'TEXT' },
-            { name: 'warns_enabled', type: 'INTEGER' }
+            { name: 'warns_enabled', type: 'INTEGER' },
+            { name: 'inventory_enabled', type: 'INTEGER' },
+            { name: 'inventory_public_viewing', type: 'INTEGER' },
+            { name: 'inventory_max_items_per_category', type: 'INTEGER' }
         ];
 
         const existingColumns = db.prepare('PRAGMA table_info(guild_config)').all().map(c => c.name);
@@ -445,6 +484,8 @@ function createBirthdayTable(db) {
 }
 
 async function handleWelcomeConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
     const channel = interaction.options.getChannel('kanaal');
     const role = interaction.options.getRole('rol');
     const title = interaction.options.getString('titel');
@@ -454,32 +495,55 @@ async function handleWelcomeConfig(interaction, db) {
     const footer = interaction.options.getString('footer');
     const embedEnabled = interaction.options.getBoolean('embed_enabled');
 
-    const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (
-            guild_id, 
-            welcome_channel, 
-            welcome_role, 
-            welcome_title, 
-            welcome_message, 
-            welcome_color, 
-            welcome_image, 
-            welcome_footer, 
-            welcome_embed_enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    stmt.run(
-        interaction.guild.id, 
-        channel.id, 
-        role?.id, 
-        title, 
-        message, 
-        color, 
-        image, 
-        footer,
-        embedEnabled === true ? 1 : 0
-    );
+    // 1. Zorg dat er een rij bestaat
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
 
+    // 2. Bouw een dynamische UPDATE statement
+    const updates = [];
+    const values = [];
+
+    if (channel) {
+        updates.push("welcome_channel = ?");
+        values.push(channel.id);
+    }
+    if (role) {
+        updates.push("welcome_role = ?");
+        values.push(role.id);
+    }
+    if (title !== null) {
+        updates.push("welcome_title = ?");
+        values.push(title);
+    }
+    if (message !== null) {
+        updates.push("welcome_message = ?");
+        values.push(message);
+    }
+    if (color !== null) {
+        updates.push("welcome_color = ?");
+        values.push(color);
+    }
+    if (image !== null) {
+        updates.push("welcome_image = ?");
+        values.push(image);
+    }
+    if (footer !== null) {
+        updates.push("welcome_footer = ?");
+        values.push(footer);
+    }
+    if (embedEnabled !== null) {
+        updates.push("welcome_embed_enabled = ?");
+        values.push(embedEnabled ? 1 : 0);
+    }
+
+    if (updates.length > 0) {
+        const updateStmt = `UPDATE guild_config SET ${updates.join(", ")} WHERE guild_id = ?`;
+        db.prepare(updateStmt).run(...values, guildId);
+    }
+
+    // 3. Geef feedback
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
         .setTitle('✅ Welkomst Configuratie')
@@ -498,18 +562,28 @@ async function handleWelcomeConfig(interaction, db) {
     await interaction.editReply({ embeds: [embed] });
 }
 
+
 async function handleTicketConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+
     const channel = interaction.options.getChannel('kanaal');
     const category = interaction.options.getChannel('categorie');
     const staffRole = interaction.options.getRole('staff_rol');
     const logChannel = interaction.options.getChannel('log_kanaal');
 
     const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, ticket_channel, ticket_category, ticket_staff_role, ticket_log_channel) 
-        VALUES (?, ?, ?, ?, ?)
+        UPDATE guild_config 
+        SET ticket_channel = ?, ticket_category = ?, ticket_staff_role = ?, ticket_log_channel = ?
+        WHERE guild_id = ?
     `);
     
-    stmt.run(interaction.guild.id, channel.id, category.id, staffRole?.id, logChannel?.id);
+    stmt.run(channel.id, category.id, staffRole?.id, logChannel?.id, interaction.guild.id);
 
     await createTicketEmbed(channel);
 
@@ -529,14 +603,19 @@ async function handleTicketConfig(interaction, db) {
 }
 
 async function handleCountingConfig(interaction, db) {
+    const guildId = interaction.guild.id;
     const channel = interaction.options.getChannel('kanaal');
 
-    const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, counting_channel, counting_number) 
-        VALUES (?, ?, 0)
-    `);
-    
-    stmt.run(interaction.guild.id, channel.id);
+    // 1. Zorg dat de rij bestaat
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+    // 2. UPDATE alleen de nodige kolommen
+    db.prepare(`
+        UPDATE guild_config SET counting_channel = ?, counting_number = 0 WHERE guild_id = ?
+    `).run(channel.id, guildId);
 
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
@@ -551,16 +630,22 @@ async function handleCountingConfig(interaction, db) {
 }
 
 async function handleBirthdayChannelConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+    
     const channel = interaction.options.getChannel('kanaal');
 
     try {
         // Ensure the column exists before inserting
-        const stmt = db.prepare(`
-            INSERT OR REPLACE INTO guild_config (guild_id, birthday_channel) 
-            VALUES (?, ?)
-        `);
-        
-        stmt.run(interaction.guild.id, channel.id);
+        db.prepare(`
+            UPDATE guild_config 
+            SET birthday_channel = ?
+            WHERE guild_id = ?
+        `).run(channel.id, interaction.guild.id);
 
         console.log(`🎂 [config] Birthday channel set to ${channel.name} (${channel.id}) for guild ${interaction.guild.name}`);
 
@@ -589,6 +674,13 @@ async function handleBirthdayChannelConfig(interaction, db) {
 }
 
 async function handleShopConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
     const action = interaction.options.getString('actie');
     const name = interaction.options.getString('naam');
     const description = interaction.options.getString('beschrijving');
@@ -596,7 +688,6 @@ async function handleShopConfig(interaction, db) {
     const category = interaction.options.getString('categorie');
     const type = interaction.options.getString('type');
     const data = interaction.options.getString('data');
-    const guildId = interaction.guild.id;
 
     console.log(`🏪 [config.shop] Processing action: ${action} for guild ${interaction.guild.name}`);
 
@@ -613,7 +704,7 @@ async function handleShopConfig(interaction, db) {
             }
 
             const stmt = db.prepare(`
-                INSERT INTO shop_items (guild_id, name, description, price, category, type, data)
+                INSERT INTO shop_items (guild_id, name, description, price, category, type, item_data)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             `);
             
@@ -743,6 +834,14 @@ async function handleShopConfig(interaction, db) {
 }
 
 async function handleLevelsConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+
     const enabled = interaction.options.getBoolean('enabled');
     const levelUpChannel = interaction.options.getChannel('level_up_kanaal');
     const xpPerMessage = interaction.options.getInteger('xp_per_message') || 20;
@@ -750,23 +849,18 @@ async function handleLevelsConfig(interaction, db) {
     const messageCooldown = interaction.options.getInteger('message_cooldown') || 60;
 
     const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (
-            guild_id, 
-            levels_enabled, 
-            level_up_channel, 
-            xp_per_message, 
-            xp_per_minute_voice, 
-            message_cooldown
-        ) VALUES (?, ?, ?, ?, ?, ?)
+        UPDATE guild_config 
+        SET levels_enabled = ?, level_up_channel = ?, xp_per_message = ?, xp_per_minute_voice = ?, message_cooldown = ?
+        WHERE guild_id = ?
     `);
     
     stmt.run(
-        interaction.guild.id, 
         enabled ? 1 : 0, 
         levelUpChannel?.id, 
         xpPerMessage, 
         xpPerMinuteVoice, 
-        messageCooldown
+        messageCooldown,
+        interaction.guild.id
     );
 
     const embed = new EmbedBuilder()
@@ -791,15 +885,23 @@ async function handleLevelsConfig(interaction, db) {
 }
 
 async function handleMemberCountConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
     const channel = interaction.options.getChannel('kanaal');
     const format = interaction.options.getString('format') || 'Leden: {count}';
 
     const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, member_count_channel, member_count_format) 
-        VALUES (?, ?, ?)
+        UPDATE guild_config 
+        SET member_count_channel = ?, member_count_format = ?
+        WHERE guild_id = ?
     `);
     
-    stmt.run(interaction.guild.id, channel.id, format);
+    stmt.run(channel.id, format, interaction.guild.id);
 
     // Update the channel name immediately
     try {
@@ -825,22 +927,33 @@ async function handleMemberCountConfig(interaction, db) {
 }
 
 async function handleInvitesConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    // 1. Zorg dat de rij bestaat
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+    // 2. Haal opties op
     const enabled = interaction.options.getBoolean('enabled');
     const logChannel = interaction.options.getChannel('log_kanaal');
 
+    // 3. Voer veilige update uit
     const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, invites_enabled, invite_log_channel) 
-        VALUES (?, ?, ?)
+        UPDATE guild_config 
+        SET invites_enabled = ?, invite_log_channel = ?
+        WHERE guild_id = ?
     `);
-    
-    stmt.run(interaction.guild.id, enabled ? 1 : 0, logChannel?.id);
+    stmt.run(enabled ? 1 : 0, logChannel?.id, guildId);
 
+    // 4. Extra setup indien ingeschakeld
     if (enabled) {
-        // Initialize invite tracking for this guild
         try {
             const invites = await interaction.guild.invites.fetch();
+
             const deleteStmt = db.prepare('DELETE FROM invite_tracking WHERE guild_id = ?');
-            deleteStmt.run(interaction.guild.id);
+            deleteStmt.run(guildId);
 
             const insertStmt = db.prepare(`
                 INSERT INTO invite_tracking (guild_id, invite_code, inviter_id, uses, max_uses)
@@ -849,7 +962,7 @@ async function handleInvitesConfig(interaction, db) {
 
             invites.forEach(invite => {
                 insertStmt.run(
-                    interaction.guild.id,
+                    guildId,
                     invite.code,
                     invite.inviter?.id || 'unknown',
                     invite.uses || 0,
@@ -863,6 +976,7 @@ async function handleInvitesConfig(interaction, db) {
         }
     }
 
+    // 5. Bevestiging sturen
     const embed = new EmbedBuilder()
         .setColor(enabled ? '#00ff00' : '#ff9900')
         .setTitle('📨 Invite Tracking Configuratie')
@@ -870,18 +984,84 @@ async function handleInvitesConfig(interaction, db) {
             { name: 'Status', value: enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld', inline: true },
             { name: 'Log Kanaal', value: logChannel ? `${logChannel}` : 'Niet ingesteld', inline: true }
         )
+        .setDescription(enabled
+            ? 'Invite tracking is nu actief! De bot houdt bij wie welke invites gebruikt.'
+            : 'Invite tracking is uitgeschakeld.')
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+
+async function handleInventoryConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+    const enabled = interaction.options.getBoolean('enabled');
+    const publicViewing = interaction.options.getBoolean('public_viewing');
+    const maxItemsPerCategory = interaction.options.getInteger('max_items_per_category');
+
+    const stmt = db.prepare(`
+        UPDATE guild_config 
+        SET inventory_enabled = ?, inventory_public_viewing = ?, inventory_max_items_per_category = ?
+        WHERE guild_id = ?
+    `);
+    
+    stmt.run(
+        enabled ? 1 : 0, 
+        publicViewing !== null ? (publicViewing ? 1 : 0) : null,
+        maxItemsPerCategory,
+        interaction.guild.id
+    );
+
+    console.log(`🎒 [config] Inventory system ${enabled ? 'enabled' : 'disabled'} for guild ${interaction.guild.name}`);
+
+    const embed = new EmbedBuilder()
+        .setColor(enabled ? '#00ff00' : '#ff9900')
+        .setTitle('🎒 Inventory Systeem Configuratie')
+        .addFields(
+            { name: 'Status', value: enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld', inline: true }
+        )
         .setTimestamp();
 
     if (enabled) {
-        embed.setDescription('Invite tracking is nu actief! De bot houdt bij wie welke invites gebruikt.');
+        embed.setDescription('Het inventory systeem is nu actief! Gebruikers kunnen hun gekochte items bekijken.');
+        
+        if (publicViewing !== null) {
+            embed.addFields({ 
+                name: 'Publiek Bekijken', 
+                value: publicViewing ? '✅ Toegestaan' : '❌ Niet toegestaan', 
+                inline: true 
+            });
+        }
+
+        if (maxItemsPerCategory !== null) {
+            embed.addFields({ 
+                name: 'Max Items per Categorie', 
+                value: maxItemsPerCategory === 0 ? 'Onbeperkt' : maxItemsPerCategory.toString(), 
+                inline: true 
+            });
+        }
     } else {
-        embed.setDescription('Invite tracking is uitgeschakeld.');
+        embed.setDescription('Het inventory systeem is uitgeschakeld.');
     }
 
     await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleViewConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
+
     const stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
     const config = stmt.get(interaction.guild.id);
 
@@ -962,6 +1142,24 @@ async function handleViewConfig(interaction, db) {
         });
     }
 
+    if (config.inventory_enabled !== null) {
+        let inventoryValue = `Status: ${config.inventory_enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld'}`;
+        
+        if (config.inventory_enabled && config.inventory_public_viewing !== null) {
+            inventoryValue += `\nPubliek Bekijken: ${config.inventory_public_viewing ? '✅ Toegestaan' : '❌ Niet toegestaan'}`;
+        }
+        
+        if (config.inventory_enabled && config.inventory_max_items_per_category !== null) {
+            inventoryValue += `\nMax Items per Categorie: ${config.inventory_max_items_per_category === 0 ? 'Onbeperkt' : config.inventory_max_items_per_category}`;
+        }
+
+        fields.push({
+            name: '🎒 Inventory Systeem',
+            value: inventoryValue,
+            inline: false
+        });
+    }
+
     if (fields.length === 0) {
         embed.setDescription('Geen modules geconfigureerd.');
     } else {
@@ -973,13 +1171,20 @@ async function handleViewConfig(interaction, db) {
 
 async function handleWarnsConfig(interaction, db) {
     const guildId = interaction.guild.id;
+
+    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
+    if (!existing) {
+        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
+    }
+
     const enabled = interaction.options.getBoolean('enabled');
 
     const stmt = db.prepare(`
-        INSERT OR REPLACE INTO guild_config (guild_id, warns_enabled)
-        VALUES (?, ?)
+        UPDATE guild_config 
+        SET warns_enabled = ?
+        WHERE guild_id = ?
     `);
-    stmt.run(guildId, enabled ? 1 : 0);
+    stmt.run(enabled ? 1 : 0, guildId);
 
     const embed = new EmbedBuilder()
         .setColor(enabled ? '#00ff00' : '#ff0000')

@@ -59,8 +59,9 @@ export default {
         if (success) {
             const reward = Math.floor(Math.random() * (crime.maxReward - crime.minReward + 1)) + crime.minReward;
             
-            stmt = db.prepare('UPDATE users SET balance = balance + ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
-            stmt.run(reward, now.toISOString(), userId, guildId);
+            const newBalance = BigInt(userData.balance) + BigInt(reward);
+            stmt = db.prepare('UPDATE users SET balance = ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
+            stmt.run(newBalance, now.toISOString(), userId, guildId);
 
             embed = new EmbedBuilder()
                 .setColor('#00ff00')
@@ -74,10 +75,11 @@ export default {
                 .setTimestamp();
         } else {
             const fine = Math.floor(Math.random() * (crime.maxFine - crime.minFine + 1)) + crime.minFine;
-            const actualFine = Math.min(fine, userData.balance); // Can't pay more than they have
+            const actualFine = Math.min(fine, Number(userData.balance)); // Can't pay more than they have
             
-            stmt = db.prepare('UPDATE users SET balance = balance - ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
-            stmt.run(actualFine, now.toISOString(), userId, guildId);
+            const newBalance = BigInt(userData.balance) - BigInt(actualFine);
+            stmt = db.prepare('UPDATE users SET balance = ?, last_crime = ? WHERE user_id = ? AND guild_id = ?');
+            stmt.run(newBalance, now.toISOString(), userId, guildId);
 
             embed = new EmbedBuilder()
                 .setColor('#ff0000')

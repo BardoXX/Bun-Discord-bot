@@ -16,7 +16,6 @@ export default {
                 .addChoices({ name: 'Alles', value: 'all' })),
 
     async execute(interaction) {
-        // BELANGRIJKE STAP: Voeg dit toe aan het begin van je functie
         await interaction.deferReply(); 
         
         const db = interaction.client.db;
@@ -74,12 +73,11 @@ export default {
             return;
         }
 
-        // Update de balans in de database
         stmt = db.prepare('UPDATE users SET balance = balance - ?, bank = bank + ? WHERE id = ? AND guild_id = ?');
         stmt.run(depositAmount, depositAmount, userId, guildId);
 
-        const newBalance = userData.balance - depositAmount;
-        const newBank = userData.bank + depositAmount;
+        const newBalance = BigInt(userData.balance) - BigInt(depositAmount);
+        const newBank = BigInt(userData.bank) + BigInt(depositAmount);
 
         const embed = new EmbedBuilder()
             .setColor('#00ff00')
