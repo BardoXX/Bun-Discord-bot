@@ -16,7 +16,6 @@ export default {
                 .addChoices({ name: 'Alles', value: 'all' })),
 
     async execute(interaction) {
-        // Eerste stap: DeferReply om aan te geven dat de bot bezig is
         await interaction.deferReply();
         
         const db = interaction.client.db;
@@ -26,20 +25,19 @@ export default {
         let amount = interaction.options.getInteger('bedrag');
         const all = interaction.options.getString('all');
 
-        // Get user data
-        let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
-        let userData = stmt.get(userId, guildId);
+        let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
+        let user = stmt.get(userId, guildId);
 
-        if (!userData) {
-            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+        if (!user) {
+            stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
             stmt.run(userId, guildId);
-            userData = { balance: 0, bank: 0 };
+            user = { balance: 0, bank: 0 };
         }
 
         let withdrawAmount;
         
         if (all === 'all') {
-            withdrawAmount = userData.bank;
+            withdrawAmount = user.bank;
         } else if (amount) {
             withdrawAmount = amount;
         } else {
@@ -49,7 +47,6 @@ export default {
                 .setDescription('Je moet een bedrag of de optie "alles" opgeven!')
                 .setTimestamp();
             
-            // Gebruik editReply() omdat we al hebben gedeferred
             await interaction.editReply({ embeds: [embed] });
             return;
         }
@@ -65,23 +62,22 @@ export default {
             return;
         }
 
-        if (userData.bank < withdrawAmount) {
+        if (user.bank < withdrawAmount) {
             const embed = new EmbedBuilder()
                 .setColor('#ff0000')
                 .setTitle('❌ Onvoldoende Bank Saldo')
-                .setDescription(`Je hebt niet genoeg geld in de bank! Je hebt maar €${userData.bank.toLocaleString()} in de bank.`)
+                .setDescription(`Je hebt niet genoeg geld in de bank! Je hebt maar €${user.bank.toLocaleString()} in de bank.`)
                 .setTimestamp();
 
             await interaction.editReply({ embeds: [embed] });
             return;
         }
 
-        // Update balance
-        stmt = db.prepare('UPDATE users SET balance = balance + ?, bank = bank - ? WHERE id = ? AND guild_id = ?');
+        stmt = db.prepare('UPDATE users SET balance = balance + ?, bank = bank - ? WHERE user_id = ? AND guild_id = ?');
         stmt.run(withdrawAmount, withdrawAmount, userId, guildId);
 
-        const newBalance = BigInt(userData.balance) + BigInt(withdrawAmount);
-        const newBank = BigInt(userData.bank) - BigInt(withdrawAmount);
+        const newBalance = BigInt(user.balance) + BigInt(withdrawAmount);
+        const newBank = BigInt(user.bank) - BigInt(withdrawAmount);
 
         const embed = new EmbedBuilder()
             .setColor('#00ff00')
@@ -94,7 +90,6 @@ export default {
             .setFooter({ text: `${interaction.user.username} • Geld opgenomen` })
             .setTimestamp();
 
-        // Gebruik editReply() omdat we al hebben gedeferred
         await interaction.editReply({ embeds: [embed] });
     },
 };

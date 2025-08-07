@@ -1,6 +1,369 @@
 import { SlashCommandBuilder, EmbedBuilder, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { createTicketEmbed } from '../utils/ticketSystem.js';
 
+// Utility functions for antiinvite and antispam configuration
+export async function configureAntiInvite(interaction, db, guildId, options = {}) {
+    await interaction.deferReply({ ephemeral: true });
+
+    // Get current config
+    let stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    let config = stmt.get(guildId);
+    
+    if (!config) {
+        // Create config if it doesn't exist
+        stmt = db.prepare(`
+            INSERT INTO guild_config (guild_id) 
+            VALUES (?)
+        `);
+        stmt.run(guildId);
+        config = { guild_id: guildId };
+    }
+
+    // Get options (from interaction or direct options)
+    const enabled = options.enabled !== undefined ? options.enabled : 
+        (interaction.options ? interaction.options.getBoolean('enabled') : undefined);
+    const defaultState = options.default_state !== undefined ? options.default_state : 
+        (interaction.options ? interaction.options.getBoolean('default_state') : undefined);
+    const addChannel = options.add_channel || 
+        (interaction.options ? interaction.options.getChannel('add_channel') : undefined);
+    const removeChannel = options.remove_channel || 
+        (interaction.options ? interaction.options.getChannel('remove_channel') : undefined);
+    const addExemptChannel = options.add_exempt_channel || 
+        (interaction.options ? interaction.options.getChannel('add_exempt_channel') : undefined);
+    const removeExemptChannel = options.remove_exempt_channel || 
+        (interaction.options ? interaction.options.getChannel('remove_exempt_channel') : undefined);
+    const addExemptRole = options.add_exempt_role || 
+        (interaction.options ? interaction.options.getRole('add_exempt_role') : undefined);
+    const removeExemptRole = options.remove_exempt_role || 
+        (interaction.options ? interaction.options.getRole('remove_exempt_role') : undefined);
+
+    // Update enabled if provided
+    if (enabled !== undefined && enabled !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_enabled = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(enabled ? 1 : 0, guildId);
+        config.anti_invite_enabled = enabled ? 1 : 0;
+    }
+
+    // Update default state if provided
+    if (defaultState !== undefined && defaultState !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_default_state = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(defaultState ? 1 : 0, guildId);
+        config.anti_invite_default_state = defaultState ? 1 : 0;
+    }
+
+    // Handle channel lists
+    if (addChannel || removeChannel || addExemptChannel || removeExemptChannel || addExemptRole || removeExemptRole) {
+        // Parse current lists
+        const channels = config.anti_invite_channels ? JSON.parse(config.anti_invite_channels) : [];
+        const exemptChannels = config.anti_invite_exempt_channels ? JSON.parse(config.anti_invite_exempt_channels) : [];
+        const exemptRoles = config.anti_invite_exempt_roles ? JSON.parse(config.anti_invite_exempt_roles) : [];
+
+        // Add/remove channels
+        if (addChannel && !channels.includes(addChannel.id)) {
+            channels.push(addChannel.id);
+        }
+        if (removeChannel) {
+            const index = channels.indexOf(removeChannel.id);
+            if (index > -1) channels.splice(index, 1);
+        }
+        
+        if (addExemptChannel && !exemptChannels.includes(addExemptChannel.id)) {
+            exemptChannels.push(addExemptChannel.id);
+        }
+        if (removeExemptChannel) {
+            const index = exemptChannels.indexOf(removeExemptChannel.id);
+            if (index > -1) exemptChannels.splice(index, 1);
+        }
+        
+        if (addExemptRole && !exemptRoles.includes(addExemptRole.id)) {
+            exemptRoles.push(addExemptRole.id);
+        }
+        if (removeExemptRole) {
+            const index = exemptRoles.indexOf(removeExemptRole.id);
+            if (index > -1) exemptRoles.splice(index, 1);
+        }
+
+        // Update database
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_channels = ?, anti_invite_exempt_channels = ?, anti_invite_exempt_roles = ?
+            WHERE guild_id = ?
+        `);
+        stmt.run(JSON.stringify(channels), JSON.stringify(exemptChannels), JSON.stringify(exemptRoles), guildId);
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#00ff00')
+        .setTitle('✅ Anti-Invite Configuratie Bijgewerkt')
+        .setDescription('De anti-invite configuratie is succesvol bijgewerkt!')
+        .setTimestamp();
+    
+    await interaction.editReply({ embeds: [embed] });
+}
+
+export async function configureAntiSpam(interaction, db, guildId, options = {}) {
+    await interaction.deferReply({ ephemeral: true });
+
+    // Get current config
+    let stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    let config = stmt.get(guildId);
+    
+    if (!config) {
+        // Create config if it doesn't exist
+        stmt = db.prepare(`
+            INSERT INTO guild_config (guild_id) 
+            VALUES (?)
+        `);
+        stmt.run(guildId);
+        config = { guild_id: guildId };
+    }
+
+    // Get options (from interaction or direct options)
+    const enabled = options.enabled !== undefined ? options.enabled : 
+        (interaction.options ? interaction.options.getBoolean('enabled') : undefined);
+    const defaultState = options.default_state !== undefined ? options.default_state : 
+        (interaction.options ? interaction.options.getBoolean('default_state') : undefined);
+    const threshold = options.threshold !== undefined ? options.threshold : 
+        (interaction.options ? interaction.options.getInteger('threshold') : undefined);
+    const timeWindow = options.time_window !== undefined ? options.time_window : 
+        (interaction.options ? interaction.options.getInteger('time_window') : undefined);
+    const addChannel = options.add_channel || 
+        (interaction.options ? interaction.options.getChannel('add_channel') : undefined);
+    const removeChannel = options.remove_channel || 
+        (interaction.options ? interaction.options.getChannel('remove_channel') : undefined);
+    const addExemptChannel = options.add_exempt_channel || 
+        (interaction.options ? interaction.options.getChannel('add_exempt_channel') : undefined);
+    const removeExemptChannel = options.remove_exempt_channel || 
+        (interaction.options ? interaction.options.getChannel('remove_exempt_channel') : undefined);
+    const addExemptRole = options.add_exempt_role || 
+        (interaction.options ? interaction.options.getRole('add_exempt_role') : undefined);
+    const removeExemptRole = options.remove_exempt_role || 
+        (interaction.options ? interaction.options.getRole('remove_exempt_role') : undefined);
+
+    // Update enabled if provided
+    if (enabled !== undefined && enabled !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_enabled = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(enabled ? 1 : 0, guildId);
+        config.anti_spam_enabled = enabled ? 1 : 0;
+    }
+
+    // Update default state if provided
+    if (defaultState !== undefined && defaultState !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_default_state = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(defaultState ? 1 : 0, guildId);
+        config.anti_spam_default_state = defaultState ? 1 : 0;
+    }
+
+    // Update threshold if provided
+    if (threshold !== undefined && threshold !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_message_threshold = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(threshold, guildId);
+    }
+
+    // Update time window if provided
+    if (timeWindow !== undefined && timeWindow !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_time_window = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(timeWindow, guildId);
+    }
+
+    // Handle channel lists
+    if (addChannel || removeChannel || addExemptChannel || removeExemptChannel || addExemptRole || removeExemptRole) {
+        // Parse current lists
+        const channels = config.anti_spam_channels ? JSON.parse(config.anti_spam_channels) : [];
+        const exemptChannels = config.anti_spam_exempt_channels ? JSON.parse(config.anti_spam_exempt_channels) : [];
+        const exemptRoles = config.anti_spam_exempt_roles ? JSON.parse(config.anti_spam_exempt_roles) : [];
+
+        // Add/remove channels
+        if (addChannel && !channels.includes(addChannel.id)) {
+            channels.push(addChannel.id);
+        }
+        if (removeChannel) {
+            const index = channels.indexOf(removeChannel.id);
+            if (index > -1) channels.splice(index, 1);
+        }
+        
+        if (addExemptChannel && !exemptChannels.includes(addExemptChannel.id)) {
+            exemptChannels.push(addExemptChannel.id);
+        }
+        if (removeExemptChannel) {
+            const index = exemptChannels.indexOf(removeExemptChannel.id);
+            if (index > -1) exemptChannels.splice(index, 1);
+        }
+        
+        if (addExemptRole && !exemptRoles.includes(addExemptRole.id)) {
+            exemptRoles.push(addExemptRole.id);
+        }
+        if (removeExemptRole) {
+            const index = exemptRoles.indexOf(removeExemptRole.id);
+            if (index > -1) exemptRoles.splice(index, 1);
+        }
+
+        // Update database
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_channels = ?, anti_spam_exempt_channels = ?, anti_spam_exempt_roles = ?
+            WHERE guild_id = ?
+        `);
+        stmt.run(JSON.stringify(channels), JSON.stringify(exemptChannels), JSON.stringify(exemptRoles), guildId);
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#00ff00')
+        .setTitle('✅ Anti-Spam Configuratie Bijgewerkt')
+        .setDescription('De anti-spam configuratie is succesvol bijgewerkt!')
+        .setTimestamp();
+    
+    await interaction.editReply({ embeds: [embed] });
+}
+
+export async function enableAntiInvite(interaction, db, guildId) {
+    return configureAntiInvite(interaction, db, guildId, { enabled: true });
+}
+
+export async function disableAntiInvite(interaction, db, guildId) {
+    return configureAntiInvite(interaction, db, guildId, { enabled: false });
+}
+
+export async function enableAntiSpam(interaction, db, guildId) {
+    return configureAntiSpam(interaction, db, guildId, { enabled: true });
+}
+
+export async function disableAntiSpam(interaction, db, guildId) {
+    return configureAntiSpam(interaction, db, guildId, { enabled: false });
+}
+
+export async function showAntiInviteStatus(interaction, db, guildId) {
+    await interaction.deferReply({ ephemeral: true });
+
+    // Get current config
+    const stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    const config = stmt.get(guildId) || {};
+
+    // Parse lists
+    const channels = config.anti_invite_channels ? JSON.parse(config.anti_invite_channels) : [];
+    const exemptChannels = config.anti_invite_exempt_channels ? JSON.parse(config.anti_invite_exempt_channels) : [];
+    const exemptRoles = config.anti_invite_exempt_roles ? JSON.parse(config.anti_invite_exempt_roles) : [];
+
+    // Format status values
+    const enabled = config.anti_invite_enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld';
+    const defaultState = config.anti_invite_default_state ? 'Aan' : 'Uit';
+    
+    let channelList = '';
+    if (channels.length > 0) {
+        channelList = channels.map(id => `<#${id}>`).join(', ');
+    } else {
+        channelList = 'Geen specifieke kanalen geconfigureerd';
+    }
+    
+    let exemptChannelList = '';
+    if (exemptChannels.length > 0) {
+        exemptChannelList = exemptChannels.map(id => `<#${id}>`).join(', ');
+    } else {
+        exemptChannelList = 'Geen vrijgestelde kanalen';
+    }
+    
+    let exemptRoleList = '';
+    if (exemptRoles.length > 0) {
+        exemptRoleList = exemptRoles.map(id => `<@&${id}>`).join(', ');
+    } else {
+        exemptRoleList = 'Geen vrijgestelde rollen';
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#0099ff')
+        .setTitle('📊 Anti-Invite Status')
+        .addFields(
+            { name: 'Status', value: enabled, inline: true },
+            { name: 'Standaard Status', value: defaultState, inline: true },
+            { name: 'Specifieke Kanalen', value: channelList, inline: false },
+            { name: 'Vrijgestelde Kanalen', value: exemptChannelList, inline: false },
+            { name: 'Vrijgestelde Rollen', value: exemptRoleList, inline: false }
+        )
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+export async function showAntiSpamStatus(interaction, db, guildId) {
+    await interaction.deferReply({ ephemeral: true });
+
+    // Get current config
+    const stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    const config = stmt.get(guildId) || {};
+
+    // Parse lists
+    const channels = config.anti_spam_channels ? JSON.parse(config.anti_spam_channels) : [];
+    const exemptChannels = config.anti_spam_exempt_channels ? JSON.parse(config.anti_spam_exempt_channels) : [];
+    const exemptRoles = config.anti_spam_exempt_roles ? JSON.parse(config.anti_spam_exempt_roles) : [];
+
+    // Format status values
+    const enabled = config.anti_spam_enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld';
+    const defaultState = config.anti_spam_default_state ? 'Aan' : 'Uit';
+    const threshold = config.anti_spam_message_threshold || 5;
+    const timeWindow = config.anti_spam_time_window || 5;
+    
+    let channelList = '';
+    if (channels.length > 0) {
+        channelList = channels.map(id => `<#${id}>`).join(', ');
+    } else {
+        channelList = 'Geen specifieke kanalen geconfigureerd';
+    }
+    
+    let exemptChannelList = '';
+    if (exemptChannels.length > 0) {
+        exemptChannelList = exemptChannels.map(id => `<#${id}>`).join(', ');
+    } else {
+        exemptChannelList = 'Geen vrijgestelde kanalen';
+    }
+    
+    let exemptRoleList = '';
+    if (exemptRoles.length > 0) {
+        exemptRoleList = exemptRoles.map(id => `<@&${id}>`).join(', ');
+    } else {
+        exemptRoleList = 'Geen vrijgestelde rollen';
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#0099ff')
+        .setTitle('📊 Anti-Spam Status')
+        .addFields(
+            { name: 'Status', value: enabled, inline: true },
+            { name: 'Standaard Status', value: defaultState, inline: true },
+            { name: 'Drempel', value: `${threshold} berichten`, inline: true },
+            { name: 'Tijdvenster', value: `${timeWindow} seconden`, inline: true },
+            { name: 'Specifieke Kanalen', value: channelList, inline: false },
+            { name: 'Vrijgestelde Kanalen', value: exemptChannelList, inline: false },
+            { name: 'Vrijgestelde Rollen', value: exemptRoleList, inline: false }
+        )
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
 export default {
     data: new SlashCommandBuilder()
         .setName('config')
@@ -225,6 +588,98 @@ export default {
                         .setMaxValue(100)))
         .addSubcommand(subcommand =>
             subcommand
+                .setName('antiinvite')
+                .setDescription('Anti-invite systeem instellingen')
+                .addBooleanOption(option =>
+                    option.setName('enabled')
+                        .setDescription('Anti-invite systeem aan/uit')
+                        .setRequired(false))
+                .addBooleanOption(option =>
+                    option.setName('default_state')
+                        .setDescription('Standaard staat voor anti-invite (aan/uit)')
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('add_channel')
+                        .setDescription('Voeg een kanaal toe aan de anti-invite lijst')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('remove_channel')
+                        .setDescription('Verwijder een kanaal van de anti-invite lijst')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('add_exempt_channel')
+                        .setDescription('Voeg een vrijgesteld kanaal toe')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('remove_exempt_channel')
+                        .setDescription('Verwijder een vrijgesteld kanaal')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addRoleOption(option =>
+                    option.setName('add_exempt_role')
+                        .setDescription('Voeg een vrijgestelde rol toe')
+                        .setRequired(false))
+                .addRoleOption(option =>
+                    option.setName('remove_exempt_role')
+                        .setDescription('Verwijder een vrijgestelde rol')
+                        .setRequired(false)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('antispam')
+                .setDescription('Anti-spam systeem instellingen')
+                .addBooleanOption(option =>
+                    option.setName('enabled')
+                        .setDescription('Anti-spam systeem aan/uit')
+                        .setRequired(false))
+                .addBooleanOption(option =>
+                    option.setName('default_state')
+                        .setDescription('Standaard staat voor anti-spam (aan/uit)')
+                        .setRequired(false))
+                .addIntegerOption(option =>
+                    option.setName('threshold')
+                        .setDescription('Aantal berichten binnen tijdvenster voor spamdetectie (standaard: 5)')
+                        .setMinValue(2)
+                        .setMaxValue(20)
+                        .setRequired(false))
+                .addIntegerOption(option =>
+                    option.setName('time_window')
+                        .setDescription('Tijdvenster in seconden (standaard: 5)')
+                        .setMinValue(1)
+                        .setMaxValue(60)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('add_channel')
+                        .setDescription('Voeg een kanaal toe aan de anti-spam lijst')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('remove_channel')
+                        .setDescription('Verwijder een kanaal van de anti-spam lijst')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('add_exempt_channel')
+                        .setDescription('Voeg een vrijgesteld kanaal toe')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('remove_exempt_channel')
+                        .setDescription('Verwijder een vrijgesteld kanaal')
+                        .addChannelTypes(ChannelType.GuildText)
+                        .setRequired(false))
+                .addRoleOption(option =>
+                    option.setName('add_exempt_role')
+                        .setDescription('Voeg een vrijgestelde rol toe')
+                        .setRequired(false))
+                .addRoleOption(option =>
+                    option.setName('remove_exempt_role')
+                        .setDescription('Verwijder een vrijgestelde rol')
+                        .setRequired(false)))
+        .addSubcommand(subcommand =>
+            subcommand
                 .setName('view')
                 .setDescription('Bekijk huidige configuratie')),
 
@@ -273,6 +728,12 @@ export default {
                     break;
                 case 'inventory':
                     await handleInventoryConfig(interaction, db);
+                    break;
+                case 'antiinvite':
+                    await handleAntiInviteConfig(interaction, db);
+                    break;
+                case 'antispam':
+                    await handleAntiSpamConfig(interaction, db);
                     break;
                 default:
                     console.error(`❌ [config] Unknown subcommand: ${subcommand}`);
@@ -1207,4 +1668,224 @@ function getCategoryEmoji(category) {
         'Other': '❓'
     };
     return emojis[category] || '📦';
+}
+
+async function handleAntiInviteConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    // Get current config
+    let stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    let config = stmt.get(guildId);
+    
+    if (!config) {
+        // Create config if it doesn't exist
+        stmt = db.prepare(`
+            INSERT INTO guild_config (guild_id) 
+            VALUES (?)
+        `);
+        stmt.run(guildId);
+        config = { guild_id: guildId };
+    }
+
+    // Get options
+    const enabled = interaction.options.getBoolean('enabled');
+    const defaultState = interaction.options.getBoolean('default_state');
+    const addChannel = interaction.options.getChannel('add_channel');
+    const removeChannel = interaction.options.getChannel('remove_channel');
+    const addExemptChannel = interaction.options.getChannel('add_exempt_channel');
+    const removeExemptChannel = interaction.options.getChannel('remove_exempt_channel');
+    const addExemptRole = interaction.options.getRole('add_exempt_role');
+    const removeExemptRole = interaction.options.getRole('remove_exempt_role');
+
+    // Update enabled if provided
+    if (enabled !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_enabled = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(enabled ? 1 : 0, guildId);
+        config.anti_invite_enabled = enabled ? 1 : 0;
+    }
+
+    // Update default state if provided
+    if (defaultState !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_default_state = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(defaultState ? 1 : 0, guildId);
+        config.anti_invite_default_state = defaultState ? 1 : 0;
+    }
+
+    // Handle channel lists
+    if (addChannel || removeChannel || addExemptChannel || removeExemptChannel || addExemptRole || removeExemptRole) {
+        // Parse current lists
+        const channels = config.anti_invite_channels ? JSON.parse(config.anti_invite_channels) : [];
+        const exemptChannels = config.anti_invite_exempt_channels ? JSON.parse(config.anti_invite_exempt_channels) : [];
+        const exemptRoles = config.anti_invite_exempt_roles ? JSON.parse(config.anti_invite_exempt_roles) : [];
+
+        // Add/remove channels
+        if (addChannel && !channels.includes(addChannel.id)) {
+            channels.push(addChannel.id);
+        }
+        if (removeChannel) {
+            const index = channels.indexOf(removeChannel.id);
+            if (index > -1) channels.splice(index, 1);
+        }
+        
+        if (addExemptChannel && !exemptChannels.includes(addExemptChannel.id)) {
+            exemptChannels.push(addExemptChannel.id);
+        }
+        if (removeExemptChannel) {
+            const index = exemptChannels.indexOf(removeExemptChannel.id);
+            if (index > -1) exemptChannels.splice(index, 1);
+        }
+        
+        if (addExemptRole && !exemptRoles.includes(addExemptRole.id)) {
+            exemptRoles.push(addExemptRole.id);
+        }
+        if (removeExemptRole) {
+            const index = exemptRoles.indexOf(removeExemptRole.id);
+            if (index > -1) exemptRoles.splice(index, 1);
+        }
+
+        // Update database
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_invite_channels = ?, anti_invite_exempt_channels = ?, anti_invite_exempt_roles = ?
+            WHERE guild_id = ?
+        `);
+        stmt.run(JSON.stringify(channels), JSON.stringify(exemptChannels), JSON.stringify(exemptRoles), guildId);
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#00ff00')
+        .setTitle('✅ Anti-Invite Configuratie Bijgewerkt')
+        .setDescription('De anti-invite configuratie is succesvol bijgewerkt!')
+        .setTimestamp();
+    
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleAntiSpamConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+
+    // Get current config
+    let stmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
+    let config = stmt.get(guildId);
+    
+    if (!config) {
+        // Create config if it doesn't exist
+        stmt = db.prepare(`
+            INSERT INTO guild_config (guild_id) 
+            VALUES (?)
+        `);
+        stmt.run(guildId);
+        config = { guild_id: guildId };
+    }
+
+    // Get options
+    const enabled = interaction.options.getBoolean('enabled');
+    const defaultState = interaction.options.getBoolean('default_state');
+    const threshold = interaction.options.getInteger('threshold');
+    const timeWindow = interaction.options.getInteger('time_window');
+    const addChannel = interaction.options.getChannel('add_channel');
+    const removeChannel = interaction.options.getChannel('remove_channel');
+    const addExemptChannel = interaction.options.getChannel('add_exempt_channel');
+    const removeExemptChannel = interaction.options.getChannel('remove_exempt_channel');
+    const addExemptRole = interaction.options.getRole('add_exempt_role');
+    const removeExemptRole = interaction.options.getRole('remove_exempt_role');
+
+    // Update enabled if provided
+    if (enabled !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_enabled = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(enabled ? 1 : 0, guildId);
+        config.anti_spam_enabled = enabled ? 1 : 0;
+    }
+
+    // Update default state if provided
+    if (defaultState !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_default_state = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(defaultState ? 1 : 0, guildId);
+        config.anti_spam_default_state = defaultState ? 1 : 0;
+    }
+
+    // Update threshold if provided
+    if (threshold !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_message_threshold = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(threshold, guildId);
+    }
+
+    // Update time window if provided
+    if (timeWindow !== null) {
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_time_window = ? 
+            WHERE guild_id = ?
+        `);
+        stmt.run(timeWindow, guildId);
+    }
+
+    // Handle channel lists
+    if (addChannel || removeChannel || addExemptChannel || removeExemptChannel || addExemptRole || removeExemptRole) {
+        // Parse current lists
+        const channels = config.anti_spam_channels ? JSON.parse(config.anti_spam_channels) : [];
+        const exemptChannels = config.anti_spam_exempt_channels ? JSON.parse(config.anti_spam_exempt_channels) : [];
+        const exemptRoles = config.anti_spam_exempt_roles ? JSON.parse(config.anti_spam_exempt_roles) : [];
+
+        // Add/remove channels
+        if (addChannel && !channels.includes(addChannel.id)) {
+            channels.push(addChannel.id);
+        }
+        if (removeChannel) {
+            const index = channels.indexOf(removeChannel.id);
+            if (index > -1) channels.splice(index, 1);
+        }
+        
+        if (addExemptChannel && !exemptChannels.includes(addExemptChannel.id)) {
+            exemptChannels.push(addExemptChannel.id);
+        }
+        if (removeExemptChannel) {
+            const index = exemptChannels.indexOf(removeExemptChannel.id);
+            if (index > -1) exemptChannels.splice(index, 1);
+        }
+        
+        if (addExemptRole && !exemptRoles.includes(addExemptRole.id)) {
+            exemptRoles.push(addExemptRole.id);
+        }
+        if (removeExemptRole) {
+            const index = exemptRoles.indexOf(removeExemptRole.id);
+            if (index > -1) exemptRoles.splice(index, 1);
+        }
+
+        // Update database
+        stmt = db.prepare(`
+            UPDATE guild_config 
+            SET anti_spam_channels = ?, anti_spam_exempt_channels = ?, anti_spam_exempt_roles = ?
+            WHERE guild_id = ?
+        `);
+        stmt.run(JSON.stringify(channels), JSON.stringify(exemptChannels), JSON.stringify(exemptRoles), guildId);
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor('#00ff00')
+        .setTitle('✅ Anti-Spam Configuratie Bijgewerkt')
+        .setDescription('De anti-spam configuratie is succesvol bijgewerkt!')
+        .setTimestamp();
+    
+    await interaction.editReply({ embeds: [embed] });
 }

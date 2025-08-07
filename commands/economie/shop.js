@@ -11,20 +11,17 @@ export default {
         const guildId = interaction.guild.id;
         const userId = interaction.user.id;
 
-        // Stap 1: Haal de balans van de gebruiker op uit de database
-        let stmtUser = db.prepare('SELECT balance FROM users WHERE id = ? AND guild_id = ?');
+        let stmtUser = db.prepare('SELECT balance FROM users WHERE user_id = ? AND guild_id = ?');
         let userData = stmtUser.get(userId, guildId);
 
-        // Als de gebruiker nog niet in de DB staat, voeg die dan toe met een balans van 0
         if (!userData) {
-            let insertStmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+            let insertStmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
             insertStmt.run(userId, guildId);
             userData = { balance: 0 };
         }
         
         const userBalance = userData.balance;
 
-        // Haal shop items op (rest van je bestaande code)
         let stmtShop = db.prepare('SELECT * FROM shop_items WHERE guild_id = ? ORDER BY category, price');
         let shopItems = stmtShop.all(guildId);
 
@@ -39,7 +36,6 @@ export default {
             return;
         }
 
-        // Groepeer items per categorie
         const categories = {};
         shopItems.forEach(item => {
             if (!categories[item.category]) {
@@ -48,7 +44,6 @@ export default {
             categories[item.category].push(item);
         });
 
-        // Maak de categorie select menu
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('shop_category')
             .setPlaceholder('Kies een categorie...');
@@ -64,11 +59,9 @@ export default {
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
 
-        // Maak de embed voor de shop
         const embed = new EmbedBuilder()
             .setColor('#00ff00')
             .setTitle('🏪 Server Shop')
-            // Stap 2: Voeg de balans toe aan de beschrijving van de embed
             .setDescription(`Welkom bij de shop! Je hebt momenteel **€${userBalance.toLocaleString()}** contant. Kies een categorie om de items te bekijken en te kopen.`)
             .addFields(
                 Object.keys(categories).map(category => ({

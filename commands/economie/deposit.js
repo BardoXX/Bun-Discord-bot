@@ -25,19 +25,19 @@ export default {
         let amount = interaction.options.getInteger('bedrag');
         const all = interaction.options.getString('all');
 
-        let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
-        let userData = stmt.get(userId, guildId);
+        let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
+        let user = stmt.get(userId, guildId);
 
-        if (!userData) {
-            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+        if (!user) {
+            stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
             stmt.run(userId, guildId);
-            userData = { balance: 0, bank: 0 };
+            user = { balance: 0, bank: 0 };
         }
 
         let depositAmount;
         
         if (all === 'all') {
-            depositAmount = userData.balance;
+            depositAmount = user.balance;
         } else if (amount) {
             depositAmount = amount;
         } else {
@@ -62,22 +62,22 @@ export default {
             return;
         }
 
-        if (userData.balance < depositAmount) {
+        if (user.balance < depositAmount) {
             const embed = new EmbedBuilder()
                 .setColor('#ff0000')
                 .setTitle('❌ Onvoldoende Saldo')
-                .setDescription(`Je hebt niet genoeg geld! Je hebt maar €${userData.balance.toLocaleString()}.`)
+                .setDescription(`Je hebt niet genoeg geld! Je hebt maar €${user.balance.toLocaleString()}.`)
                 .setTimestamp();
 
             await interaction.editReply({ embeds: [embed] });
             return;
         }
 
-        stmt = db.prepare('UPDATE users SET balance = balance - ?, bank = bank + ? WHERE id = ? AND guild_id = ?');
+        stmt = db.prepare('UPDATE users SET balance = balance - ?, bank = bank + ? WHERE user_id = ? AND guild_id = ?');
         stmt.run(depositAmount, depositAmount, userId, guildId);
 
-        const newBalance = BigInt(userData.balance) - BigInt(depositAmount);
-        const newBank = BigInt(userData.bank) + BigInt(depositAmount);
+        const newBalance = BigInt(user.balance) - BigInt(depositAmount);
+        const newBank = BigInt(user.bank) + BigInt(depositAmount);
 
         const embed = new EmbedBuilder()
             .setColor('#00ff00')

@@ -13,14 +13,15 @@ export default {
     async execute(interaction) {
         const targetUser = interaction.options.getUser('gebruiker') || interaction.user;
         const db = interaction.client.db;
+        const userId = targetUser.id;
+        const guildId = interaction.guild.id;
 
-        // Get or create user data
-        let stmt = db.prepare('SELECT * FROM users WHERE id = ? AND guild_id = ?');
-        let userData = stmt.get(targetUser.id, interaction.guild.id);
+        let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
+        let userData = stmt.get(userId, guildId);
 
         if (!userData) {
-            stmt = db.prepare('INSERT INTO users (id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
-            stmt.run(targetUser.id, interaction.guild.id);
+            stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 0, 0)');
+            stmt.run(userId, guildId);
             userData = { balance: 0, bank: 0 };
         }
 

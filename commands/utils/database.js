@@ -403,6 +403,74 @@ function addMissingColumns() {
       console.log("✅ [database] 'invite_log_channel' column added to guild_config");
     }
 
+    // Advanced moderation settings
+    if (!guildConfigColumns.includes('anti_invite_enabled')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_enabled INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'anti_invite_enabled' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_default_state')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_default_state INTEGER DEFAULT 1`);
+      console.log("✅ [database] 'anti_invite_default_state' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_channels')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_channels TEXT`);
+      console.log("✅ [database] 'anti_invite_channels' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_categories')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_categories TEXT`);
+      console.log("✅ [database] 'anti_invite_categories' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_exempt_channels')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_channels TEXT`);
+      console.log("✅ [database] 'anti_invite_exempt_channels' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_exempt_categories')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_categories TEXT`);
+      console.log("✅ [database] 'anti_invite_exempt_categories' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_invite_exempt_roles')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_roles TEXT`);
+      console.log("✅ [database] 'anti_invite_exempt_roles' column added to guild_config");
+    }
+
+    // Anti-spam settings
+    if (!guildConfigColumns.includes('anti_spam_enabled')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_enabled INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'anti_spam_enabled' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_default_state')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_default_state INTEGER DEFAULT 1`);
+      console.log("✅ [database] 'anti_spam_default_state' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_channels')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_channels TEXT`);
+      console.log("✅ [database] 'anti_spam_channels' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_categories')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_categories TEXT`);
+      console.log("✅ [database] 'anti_spam_categories' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_exempt_channels')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_channels TEXT`);
+      console.log("✅ [database] 'anti_spam_exempt_channels' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_exempt_categories')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_categories TEXT`);
+      console.log("✅ [database] 'anti_spam_exempt_categories' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_exempt_roles')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_roles TEXT`);
+      console.log("✅ [database] 'anti_spam_exempt_roles' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_message_threshold')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_message_threshold INTEGER DEFAULT 5`);
+      console.log("✅ [database] 'anti_spam_message_threshold' column added to guild_config");
+    }
+    if (!guildConfigColumns.includes('anti_spam_time_window')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_time_window INTEGER DEFAULT 5`);
+      console.log("✅ [database] 'anti_spam_time_window' column added to guild_config");
+    }
+
     console.log('✅ [database] All missing columns checked and added');
   } catch (error) {
     console.error('❌ [database] Error adding missing columns:', error);
