@@ -39,11 +39,7 @@ export default {
         .addSubcommand(subcommand =>
             subcommand
                 .setName('today')
-                .setDescription('Bekijk wie er vandaag jarig is'))
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('test')
-                .setDescription('Test de verjaardag aankondiging (alleen voor admins)')),
+                .setDescription('Bekijk wie er vandaag jarig is')),
 
     async execute(interaction) {
         await interaction.deferReply();
@@ -74,9 +70,6 @@ export default {
                     break;
                 case 'today':
                     await handleTodaysBirthdays(interaction, db, guildId);
-                    break;
-                case 'test':
-                    await handleTestBirthday(interaction, db, guildId);
                     break;
                 default:
                     const unknownEmbed = new EmbedBuilder()
@@ -148,60 +141,6 @@ async function handleSetBirthday(interaction, db, guildId, userId) {
             .setTimestamp();
         await interaction.editReply({ embeds: [embed] });
 }
-
-async function handleTestBirthday(interaction, db, guildId) {
-    // Check if user has admin permissions
-    if (!interaction.member.permissions.has('ManageGuild')) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('❌ Geen Toestemming')
-            .setDescription('Je hebt geen toestemming om deze command te gebruiken.')
-            .setTimestamp();
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
-    // Check if birthday channel is configured
-    const configStmt = db.prepare(`
-        SELECT birthday_channel FROM guild_config WHERE guild_id = ?
-    `);
-    const config = configStmt.get(guildId);
-
-    if (!config || !config.birthday_channel) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff9900')
-            .setTitle('⚠️ Geen Verjaardag Kanaal')
-            .setDescription('Er is geen verjaardag kanaal ingesteld. Gebruik `/config birthday_channel` om er een in te stellen.')
-            .setTimestamp();
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
-    try {
-        // Trigger birthday check manually
-        if (interaction.client.birthdayScheduler) {
-            await interaction.client.birthdayScheduler.triggerBirthdayCheck();
-            
-            const embed = new EmbedBuilder()
-                .setColor('#00ff00')
-                .setTitle('✅ Test Uitgevoerd')
-                .setDescription('De verjaardag check is handmatig uitgevoerd. Controleer het verjaardag kanaal voor eventuele aankondigingen.')
-                .setTimestamp();
-            await interaction.editReply({ embeds: [embed] });
-        } else {
-            const embed = new EmbedBuilder()
-                .setColor('#ff0000')
-                .setTitle('❌ Scheduler Niet Beschikbaar')
-                .setDescription('De verjaardag scheduler is niet beschikbaar.')
-                .setTimestamp();
-            await interaction.editReply({ embeds: [embed] });
-        }
-    } catch (error) {
-        console.error('❌ [birthday] Error testing birthday scheduler:', error);
-        throw error;
-    }
-        return;
-    }
 
     try {
         // Insert into both tables for compatibility
@@ -363,12 +302,16 @@ async function handleTodaysBirthdays(interaction, db, guildId) {
 }
 
 function isValidDate(day, month) {
-    if (day < 1 || day > 31 || month < 1 || month > 12) {
+    // Convert BigInt to number if needed
+    const dayNum = typeof day === 'bigint' ? Number(day) : day;
+    const monthNum = typeof month === 'bigint' ? Number(month) : month;
+    
+    if (dayNum < 1 || dayNum > 31 || monthNum < 1 || monthNum > 12) {
         return false;
     }
 
     const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    return day <= daysInMonth[month - 1];
+    return dayNum <= daysInMonth[monthNum - 1];
 }
 
 function getMonthName(month) {
@@ -376,5 +319,7 @@ function getMonthName(month) {
         'januari', 'februari', 'maart', 'april', 'mei', 'juni',
         'juli', 'augustus', 'september', 'oktober', 'november', 'december'
     ];
-    return monthNames[month - 1];
+    // Convert BigInt to number if needed
+    const monthNum = typeof month === 'bigint' ? Number(month) : month;
+    return monthNames[monthNum - 1];
 }

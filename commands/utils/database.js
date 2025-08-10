@@ -10,7 +10,7 @@ export function getDb() {
 
 export function initializeDatabase() {
     try {
-        const dbPath = path.join(process.cwd(), 'bot.db');
+        const dbPath = path.join(__dirname, 'bot.db')
         
         db = new Database(dbPath, { 
             create: true,
@@ -177,7 +177,50 @@ function createTables() {
       guild_id TEXT,
       user_id TEXT,
       channel_id TEXT,
-      status TEXT DEFAULT 'open'
+      status TEXT DEFAULT 'open',
+      ticket_type TEXT,
+      panel_id INTEGER,
+      button_id INTEGER
+    )
+  `);
+
+  // Ticket panels
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_panels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT,
+      panel_name TEXT,
+      channel_id TEXT,
+      message_id TEXT,
+      embed_title TEXT,
+      embed_description TEXT,
+      embed_color TEXT
+    )
+  `);
+
+  // Ticket buttons
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_buttons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      panel_id INTEGER,
+      label TEXT,
+      style TEXT,
+      emoji TEXT,
+      ticket_type TEXT,
+      use_form BOOLEAN DEFAULT 0,
+      form_fields TEXT,
+      role_requirement TEXT,
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id)
+    )
+  `);
+
+  // Ticket configuration
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_config (
+      guild_id TEXT PRIMARY KEY,
+      ticket_category_id TEXT,
+      thread_mode BOOLEAN DEFAULT 0,
+      log_channel_id TEXT
     )
   `);
 
@@ -247,6 +290,81 @@ function createTables() {
     )
   `);
 
+  // Ticket system tables
+  // Ticket configuration per guild
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_config (
+      guild_id TEXT PRIMARY KEY,
+      ticket_category_id TEXT,
+      ticket_channel_id TEXT,
+      thread_mode INTEGER DEFAULT 0,
+      log_channel_id TEXT
+    )
+  `);
+
+  // Ticket panels
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_panels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      panel_name TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      embed_title TEXT DEFAULT '🎫 Ticket Systeem',
+      embed_description TEXT DEFAULT 'Klik op een knop hieronder om een ticket aan te maken.',
+      embed_color TEXT DEFAULT '#0099ff',
+      FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id) ON DELETE CASCADE
+    )
+  `);
+
+  // Ticket panel buttons
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_buttons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      panel_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      style TEXT DEFAULT 'PRIMARY',
+      emoji TEXT,
+      ticket_type TEXT NOT NULL,
+      use_form INTEGER DEFAULT 0,
+      form_fields TEXT,
+      role_requirement TEXT,
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Tickets table (updated structure)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      status TEXT DEFAULT 'open',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME,
+      claimed_by TEXT,
+      ticket_type TEXT,
+      panel_id INTEGER,
+      button_id INTEGER,
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id),
+      FOREIGN KEY (button_id) REFERENCES ticket_buttons(id)
+    )
+  `);
+
+  // Purchase logs
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      item_id INTEGER NOT NULL,
+      item_name TEXT NOT NULL,
+      price INTEGER NOT NULL,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (item_id) REFERENCES shop_items(id)
+    )
+  `);
+
   // Indices voor performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_user_guild ON users(user_id, guild_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_inventory_user_guild ON user_inventory(user_id, guild_id)`);
@@ -254,6 +372,8 @@ function createTables() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_job_history_user ON job_history(user_id, guild_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_job_history_date ON job_history(work_date)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_shop_items_guild ON shop_items(guild_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_purchase_logs_user ON purchase_logs(user_id, guild_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_purchase_logs_item ON purchase_logs(item_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)`);
 }
 
@@ -313,6 +433,44 @@ function addMissingColumns() {
     if (!inventoryColumns.includes('item_id')) {
       db.exec(`ALTER TABLE user_inventory ADD COLUMN item_id INTEGER NOT NULL DEFAULT 0`);
       console.log("✅ [database] 'item_id' column added to user_inventory");
+    }
+
+    // Check and add missing columns for tickets table
+    try {
+      const ticketColumns = db.prepare(`PRAGMA table_info(tickets)`).all().map(c => c.name);
+      
+      if (!ticketColumns.includes('ticket_type')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN ticket_type TEXT`);
+        console.log("✅ [database] 'ticket_type' column added to tickets");
+      }
+      
+      if (!ticketColumns.includes('panel_id')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN panel_id INTEGER`);
+        console.log("✅ [database] 'panel_id' column added to tickets");
+      }
+      
+      if (!ticketColumns.includes('button_id')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN button_id INTEGER`);
+        console.log("✅ [database] 'button_id' column added to tickets");
+      }
+      
+      if (!ticketColumns.includes('created_at')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+        console.log("✅ [database] 'created_at' column added to tickets");
+      }
+      
+      if (!ticketColumns.includes('closed_at')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN closed_at DATETIME`);
+        console.log("✅ [database] 'closed_at' column added to tickets");
+      }
+      
+      if (!ticketColumns.includes('claimed_by')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN claimed_by TEXT`);
+        console.log("✅ [database] 'claimed_by' column added to tickets");
+      }
+    } catch (error) {
+      // Tickets table might not exist yet, which is fine
+      console.log("ℹ️ [database] Tickets table not yet created or error checking columns");
     }
     if (!inventoryColumns.includes('quantity')) {
       db.exec(`ALTER TABLE user_inventory ADD COLUMN quantity INTEGER DEFAULT 0`);
@@ -469,6 +627,13 @@ function addMissingColumns() {
     if (!guildConfigColumns.includes('anti_spam_time_window')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_time_window INTEGER DEFAULT 5`);
       console.log("✅ [database] 'anti_spam_time_window' column added to guild_config");
+    }
+
+    // Ticket config settings
+    const ticketConfigColumns = db.prepare(`PRAGMA table_info(ticket_config)`).all().map(c => c.name);
+    if (!ticketConfigColumns.includes('ticket_channel_id')) {
+      db.exec(`ALTER TABLE ticket_config ADD COLUMN ticket_channel_id TEXT`);
+      console.log("✅ [database] 'ticket_channel_id' column added to ticket_config");
     }
 
     console.log('✅ [database] All missing columns checked and added');

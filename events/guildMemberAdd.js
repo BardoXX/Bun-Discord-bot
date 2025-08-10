@@ -1,5 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import { formatMessage } from 'commands/helper/formatMessage.js';
+import { validateEmbedColor, getColorErrorMessage } from 'commands/utils/colorValidator.js';
 
 // Map om bij te houden welke users momenteel worden verwerkt
 const processingUsers = new Map();
@@ -116,8 +117,20 @@ export default {
 
             // Stuur welkomstbericht
             if (config.welcome_embed_enabled) {
+                // Validate embed color
+                let embedColor = '#0099ff'; // Default color
+                if (config.welcome_color) {
+                    const validatedColor = validateEmbedColor(config.welcome_color);
+                    if (validatedColor !== null) {
+                        embedColor = validatedColor;
+                    } else {
+                        console.warn(`⚠️ [guildMemberAdd] Ongeldige kleur in configuratie voor guild ${guild.name}: ${config.welcome_color}. Gebruik standaard kleur.`);
+                        // Optionally send a warning message to a log channel
+                    }
+                }
+                
                 const embed = new EmbedBuilder()
-                    .setColor(config.welcome_color || '#0099ff')
+                    .setColor(embedColor)
                     .setTitle(formattedTitle)
                     .setDescription(formattedMessage)
                     .setTimestamp();

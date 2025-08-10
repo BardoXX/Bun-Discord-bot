@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder, ChannelType, PermissionFlagsBits } from 'discord.js';
 import { createTicketEmbed } from '../utils/ticketSystem.js';
+import { setTicketConfig, getTicketConfig } from '../../modules/tickets/ticketConfig.js';
 
 // Utility functions for antiinvite and antispam configuration
 export async function configureAntiInvite(interaction, db, guildId, options = {}) {
@@ -533,7 +534,23 @@ export default {
                         .setDescription('Cooldown tussen XP berichten in seconden (standaard: 60)')
                         .setRequired(false)
                         .setMinValue(10)
-                        .setMaxValue(300)))
+                        .setMaxValue(300))
+                .addStringOption(option =>
+                    option.setName('embed_image')
+                        .setDescription('Afbeelding voor level embeds (URL)')
+                        .setRequired(false))
+                .addStringOption(option =>
+                    option.setName('embed_footer')
+                        .setDescription('Footer tekst voor level embeds')
+                        .setRequired(false))
+                .addStringOption(option =>
+                    option.setName('embed_color')
+                        .setDescription('Kleur voor level embeds (hex code, bijv. #00ff00)')
+                        .setRequired(false))
+                .addBooleanOption(option =>
+                    option.setName('reset_embed')
+                        .setDescription('Reset embed instellingen naar standaard')
+                        .setRequired(false)))
         .addSubcommand(subcommand =>
             subcommand
                 .setName('member_count')
@@ -834,6 +851,9 @@ async function ensureConfigTableExists(db) {
             { name: 'xp_per_message', type: 'INTEGER' },
             { name: 'xp_per_minute_voice', type: 'INTEGER' },
             { name: 'message_cooldown', type: 'INTEGER' },
+            { name: 'level_embed_image', type: 'TEXT' },
+            { name: 'level_embed_footer', type: 'TEXT' },
+            { name: 'level_embed_color', type: 'TEXT' },
             { name: 'member_count_channel', type: 'TEXT' },
             { name: 'member_count_format', type: 'TEXT' },
             { name: 'invites_enabled', type: 'INTEGER' },
@@ -1032,34 +1052,196 @@ async function handleTicketConfig(interaction, db) {
         db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
     }
 
-
-    const channel = interaction.options.getChannel('kanaal');
-    const category = interaction.options.getChannel('categorie');
-    const staffRole = interaction.options.getRole('staff_rol');
-    const logChannel = interaction.options.getChannel('log_kanaal');
-
+    // Get current ticket config
+    let config = getTicketConfig(db, guildId);
+    
+    // Get options
+    const category = interaction.options.getChannel('category');
+    const channel = interaction.options.getChannel('channel');
+    const threadMode = interaction.options.getBoolean('thread_mode');
+    const logChannel = interaction.options.getChannel('log_channel');
+    
+    // If no options provided, show current config
+    if (!category && !channel && threadMode === null && !logChannel) {
+        if (!config) {
+            const embed = new EmbedBuilder()
+                .setColor('#ff9900')
+                .setTitle('⚙️ Ticket Configuratie')
+                .setDescription('Ticket systeem is nog niet geconfigureerd.')
+                .setTimestamp();
+            
+            await interaction.editReply({ embeds: [embed] });
+            return;
+        }
+        
+        const embed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('⚙️ Ticket Configuratie')
+            .setDescription('Huidige ticket systeem instellingen:')
+            .setTimestamp();
+        
+        if (config.ticket_category_id) {
+            embed.addFields({ 
+                name: '🎫 Categorie', 
+                value: `<#${config.ticket_category_id}>`, 
+                inline: true 
+            });
+        } else {
+            embed.addFields({ 
+                name: '🎫 Categorie', 
+                value: 'Niet ingesteld', 
+                inline: true 
+            });
+        }
+        
+        if (config.ticket_channel_id) {
+            embed.addFields({ 
+                name: '💬 Thread Kanaal', 
+                value: `<#${config.ticket_channel_id}>`, 
+                inline: true 
+            });
+        } else {
+            embed.addFields({ 
+                name: '💬 Thread Kanaal', 
+                value: 'Niet ingesteld', 
+                inline: true 
+            });
+        }
+        
+        embed.addFields({ 
+            name: '🔄 Thread Modus', 
+            value: config.thread_mode ? 'Aan' : 'Uit', 
+            inline: true 
+        });
+        
+        if (config.log_channel_id) {
+            embed.addFields({ 
+                name: '📝 Log Kanaal', 
+                value: `<#${config.log_channel_id}>`, 
+                inline: true 
+            });
+        } else {
+            embed.addFields({ 
+                name: '📝 Log Kanaal', 
+                value: 'Niet ingesteld', 
+                inline: true 
+            });
+        }
+        
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+    
+    // Update config
+    const updateData = {};
+    
+    if (category) {
+        updateData.ticket_category_id = category.id;
+    }
+    
+    if (channel) {
+        updateData.ticket_channel_id = channel.id;
+    }
+    
+    if (threadMode !== null) {
+        updateData.thread_mode = threadMode ? 1 : 0;
+    }
+    
+    if (logChannel) {
+        updateData.log_channel_id = logChannel.id;
+    }
+    
+    // If we have a current config, merge updates
+    if (config) {
+        setTicketConfig(db, guildId, { ...config, ...updateData });
+    } else {
+        // Create new config
+        setTicketConfig(db, guildId, updateData);
+    }
+    
+    // Get updated config
+    config = getTicketConfig(db, guildId);
+    
+    // Update legacy guild_config table for backward compatibility
     const stmt = db.prepare(`
         UPDATE guild_config 
-        SET ticket_channel = ?, ticket_category = ?, ticket_staff_role = ?, ticket_log_channel = ?
+        SET ticket_channel = ?, ticket_category = ?, ticket_log_channel = ?
         WHERE guild_id = ?
     `);
     
-    stmt.run(channel.id, category.id, staffRole?.id, logChannel?.id, interaction.guild.id);
+    stmt.run(channel?.id, category?.id, logChannel?.id, interaction.guild.id);
+    
+    // Update new ticket_config table
+    const currentConfig = db.prepare('SELECT * FROM ticket_config WHERE guild_id = ?').get(guildId);
+    if (currentConfig) {
+        const newConfig = {
+            ticket_category_id: category?.id || currentConfig.ticket_category_id,
+            ticket_channel_id: channel?.id || currentConfig.ticket_channel_id,
+            thread_mode: threadMode !== null ? (threadMode ? 1 : 0) : currentConfig.thread_mode,
+            log_channel_id: logChannel?.id || currentConfig.log_channel_id
+        };
+        
+        const updateStmt = db.prepare(`
+            UPDATE ticket_config 
+            SET ticket_category_id = ?, ticket_channel_id = ?, thread_mode = ?, log_channel_id = ?
+            WHERE guild_id = ?
+        `);
+        updateStmt.run(
+            newConfig.ticket_category_id,
+            newConfig.ticket_channel_id,
+            newConfig.thread_mode,
+            newConfig.log_channel_id,
+            guildId
+        );
+    } else {
+        const insertStmt = db.prepare(`
+            INSERT INTO ticket_config (guild_id, ticket_category_id, ticket_channel_id, thread_mode, log_channel_id)
+            VALUES (?, ?, ?, ?, ?)
+        `);
+        insertStmt.run(category?.id, channel?.id, guildId, threadMode ? 1 : 0, logChannel?.id);
+    }
 
-    await createTicketEmbed(channel);
+    if (channel) {
+        await createTicketEmbed(channel);
+    }
 
+    // Create success embed
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
-        .setTitle('🎫 Ticket Systeem Configuratie')
-        .addFields(
-            { name: 'Kanaal', value: `${channel}`, inline: true },
-            { name: 'Categorie', value: `${category}`, inline: true },
-            { name: 'Staff Rol', value: staffRole ? `${staffRole}` : 'Niet ingesteld', inline: true },
-            { name: 'Log Kanaal', value: logChannel ? `${logChannel}` : 'Niet ingesteld', inline: true }
-        )
-        .setDescription('Ticket bericht is aangemaakt in het gekozen kanaal!')
+        .setTitle('✅ Ticket Configuratie Bijgewerkt')
+        .setDescription('De ticket configuratie is succesvol bijgewerkt.')
         .setTimestamp();
-
+    
+    if (config.ticket_category_id) {
+        embed.addFields({ 
+            name: '🎫 Categorie', 
+            value: `<#${config.ticket_category_id}>`, 
+            inline: true 
+        });
+    }
+    
+    if (config.ticket_channel_id) {
+        embed.addFields({ 
+            name: '💬 Thread Kanaal', 
+            value: `<#${config.ticket_channel_id}>`, 
+            inline: true 
+        });
+    }
+    
+    embed.addFields({ 
+        name: '🔄 Thread Modus', 
+        value: config.thread_mode ? 'Aan' : 'Uit', 
+        inline: true 
+    });
+    
+    if (config.log_channel_id) {
+        embed.addFields({ 
+            name: '📝 Log Kanaal', 
+            value: `<#${config.log_channel_id}>`, 
+            inline: true 
+        });
+    }
+    
     await interaction.editReply({ embeds: [embed] });
 }
 
@@ -1302,27 +1484,70 @@ async function handleLevelsConfig(interaction, db) {
         db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
     }
 
-
     const enabled = interaction.options.getBoolean('enabled');
     const levelUpChannel = interaction.options.getChannel('level_up_kanaal');
     const xpPerMessage = interaction.options.getInteger('xp_per_message') || 20;
     const xpPerMinuteVoice = interaction.options.getInteger('xp_per_minute_voice') || 5;
     const messageCooldown = interaction.options.getInteger('message_cooldown') || 60;
+    const embedImage = interaction.options.getString('embed_image');
+    const embedFooter = interaction.options.getString('embed_footer');
+    const embedColor = interaction.options.getString('embed_color');
+    const resetEmbed = interaction.options.getBoolean('reset_embed');
 
-    const stmt = db.prepare(`
-        UPDATE guild_config 
-        SET levels_enabled = ?, level_up_channel = ?, xp_per_message = ?, xp_per_minute_voice = ?, message_cooldown = ?
-        WHERE guild_id = ?
-    `);
+    // Build dynamic update statement
+    const updates = [];
+    const values = [];
+
+    if (enabled !== null) {
+        updates.push("levels_enabled = ?");
+        values.push(enabled ? 1 : 0);
+    }
     
-    stmt.run(
-        enabled ? 1 : 0, 
-        levelUpChannel?.id, 
-        xpPerMessage, 
-        xpPerMinuteVoice, 
-        messageCooldown,
-        interaction.guild.id
-    );
+    if (levelUpChannel) {
+        updates.push("level_up_channel = ?");
+        values.push(levelUpChannel.id);
+    }
+    
+    if (xpPerMessage !== null) {
+        updates.push("xp_per_message = ?");
+        values.push(xpPerMessage);
+    }
+    
+    if (xpPerMinuteVoice !== null) {
+        updates.push("xp_per_minute_voice = ?");
+        values.push(xpPerMinuteVoice);
+    }
+    
+    if (messageCooldown !== null) {
+        updates.push("message_cooldown = ?");
+        values.push(messageCooldown);
+    }
+    
+    if (resetEmbed) {
+        // Reset embed settings to null
+        updates.push("level_embed_image = ?, level_embed_footer = ?, level_embed_color = ?");
+        values.push(null, null, null);
+    } else {
+        if (embedImage !== null) {
+            updates.push("level_embed_image = ?");
+            values.push(embedImage);
+        }
+        
+        if (embedFooter !== null) {
+            updates.push("level_embed_footer = ?");
+            values.push(embedFooter);
+        }
+        
+        if (embedColor !== null) {
+            updates.push("level_embed_color = ?");
+            values.push(embedColor);
+        }
+    }
+
+    if (updates.length > 0) {
+        const updateStmt = `UPDATE guild_config SET ${updates.join(", ")} WHERE guild_id = ?`;
+        db.prepare(updateStmt).run(...values, guildId);
+    }
 
     const embed = new EmbedBuilder()
         .setColor(enabled ? '#00ff00' : '#ff9900')
@@ -1335,6 +1560,25 @@ async function handleLevelsConfig(interaction, db) {
             { name: 'Bericht Cooldown', value: `${messageCooldown}s`, inline: true }
         )
         .setTimestamp();
+
+    // Add embed customization info if any options were provided
+    const embedCustomizations = [];
+    if (embedImage !== null) {
+        embedCustomizations.push(`Afbeelding: ${embedImage || 'Verwijderd'}`);
+    }
+    if (embedFooter !== null) {
+        embedCustomizations.push(`Footer: ${embedFooter || 'Verwijderd'}`);
+    }
+    if (embedColor !== null) {
+        embedCustomizations.push(`Kleur: ${embedColor || 'Verwijderd'}`);
+    }
+    if (resetEmbed) {
+        embedCustomizations.push('Embed instellingen gereset naar standaard');
+    }
+
+    if (embedCustomizations.length > 0) {
+        embed.addFields({ name: 'Embed Aanpassingen', value: embedCustomizations.join('\n'), inline: false });
+    }
 
     if (enabled) {
         embed.setDescription('Het level systeem is nu actief! Gebruikers krijgen XP voor berichten en voice chat.');

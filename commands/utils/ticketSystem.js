@@ -1,5 +1,7 @@
 // utils/ticketSystem.js
 import { EmbedBuilder, ButtonBuilder, ActionRowBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, AttachmentBuilder } from 'discord.js';
+import { createTicketChannelOrThread } from '../../modules/tickets/ticketCreate.js';
+import { getTicketConfig } from '../../modules/tickets/ticketConfig.js';
 
 /**
  * Creates and sends the initial ticket creation embed to a channel.
@@ -25,6 +27,85 @@ export async function createTicketEmbed(channel) {
         .addComponents(button);
 
     await channel.send({ embeds: [embed], components: [row] });
+}
+
+/**
+ * Creates a simple ticket (legacy support for existing system)
+ * @param {import('discord.js').ButtonInteraction} interaction The button interaction.
+ */
+export async function createTicket(interaction) {
+    // We gebruiken flags: 64 voor een bericht dat alleen de gebruiker kan zien
+    await interaction.deferReply({ flags: 64 });
+
+    const db = interaction.client.db;
+    const userId = interaction.user.id;
+    const guildId = interaction.guild.id;
+
+    // Check for existing open ticket
+    const stmt = db.prepare('SELECT * FROM tickets WHERE user_id = ? AND guild_id = ? AND status = "open"');
+    const existingTicket = stmt.get(userId, guildId);
+
+    if (existingTicket) {
+        const embed = new EmbedBuilder()
+            .setColor('#ff9900')
+            .setTitle('⚠️ Ticket Bestaat Al')
+            .setDescription(`Je hebt al een open ticket: <#${existingTicket.channel_id}>`)
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+
+    // Get guild ticket config
+    const config = getTicketConfig(db, guildId);
+
+    if (!config || (!config.ticket_category_id && !config.thread_mode)) {
+        const embed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Configuratie Fout')
+            .setDescription('Ticket systeem is niet geconfigureerd. Neem contact op met een administrator.')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+
+    try {
+        // Create ticket channel or thread
+        const ticketResult = await createTicketChannelOrThread(
+            interaction, 
+            db, 
+            config, 
+            'general', 
+            null
+        );
+
+        // Save ticket to database
+        const insertStmt = db.prepare(`
+            INSERT INTO tickets (guild_id, user_id, channel_id, status, ticket_type)
+            VALUES (?, ?, ?, "open", ?)
+        `);
+        insertStmt.run(guildId, userId, ticketResult.channel.id, 'general');
+
+        const successEmbed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('✅ Ticket Aangemaakt')
+            .setDescription(`Je ticket is aangemaakt: ${ticketResult.channel}`)
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [successEmbed] });
+
+    } catch (error) {
+        console.error('Error creating ticket:', error);
+        
+        const embed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Fout')
+            .setDescription('Er is een fout opgetreden bij het aanmaken van je ticket. Probeer het later opnieuw.')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+    }
 }
 
 /**

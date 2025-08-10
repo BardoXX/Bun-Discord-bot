@@ -135,8 +135,8 @@ export async function execute(interaction) {
     const targetUser = interaction.options.getUser('gebruiker') || interaction.user;
     const guildId = interaction.guild.id;
 
-    // Check if levels are enabled
-    const configStmt = db.prepare('SELECT levels_enabled FROM guild_config WHERE guild_id = ?');
+    // Check if levels are enabled and get embed customization settings
+    const configStmt = db.prepare('SELECT levels_enabled, level_embed_image, level_embed_footer, level_embed_color FROM guild_config WHERE guild_id = ?');
     const config = configStmt.get(guildId);
 
     if (!config || !config.levels_enabled) {
@@ -193,7 +193,6 @@ export async function execute(interaction) {
     const booster = boosterStmt.get(targetUser.id, guildId);
 
     const embed = new EmbedBuilder()
-        .setColor('#00ff00')
         .setTitle(`📊 ${targetUser.displayName}'s Level`)
         .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
         .addFields(
@@ -205,6 +204,21 @@ export async function execute(interaction) {
             { name: '📊 Voortgang', value: createProgressBar(xpProgress, xpRequired), inline: false }
         )
         .setTimestamp();
+
+    // Apply guild-specific embed customization if available, otherwise use defaults
+    if (config.level_embed_color) {
+        embed.setColor(config.level_embed_color);
+    } else {
+        embed.setColor('#00ff00');
+    }
+
+    if (config.level_embed_image) {
+        embed.setImage(config.level_embed_image);
+    }
+
+    if (config.level_embed_footer) {
+        embed.setFooter({ text: config.level_embed_footer });
+    }
 
     if (booster) {
         const expiresAt = new Date(booster.expires_at);
