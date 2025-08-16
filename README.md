@@ -4,50 +4,81 @@
 
 Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast JavaScript runtime, and **Discord.js**, a powerful library for interacting with the Discord API.
 
-## Features
+## 🚀 Features
 
+### ⚙️ Configuratie
+- `/config` — beheer alle bot-instellingen (welkom, tickets, levels, economie, enz.)
 
-**Moderatie**
-- ban
-- kick
-- close
-- kick
-- warn
-- welkom
--- alles is aanpasbaar via /config welkom
-- Member Count
-- Ticket Syteem
--- alles is aanpasbaar via /config ticket
--- Claim button 
--- close button
--- aparte /close functie,
--- Wanneer geen ticket kanaal krijg je ""Dit is geen ticket kanaal"" melding
-- Antispam = alles instelbaar via /config
-- Antiinvite = alles instelbaar via /config
+---
 
-**Economie**
-- balance 
-- Crime
-- Depost
-- withdraw
-- work
-- shop 
-- inventory
-- depost
-- withdraw
-- jobstats
+### 💰 Economie
+- `/balance` — bekijk je saldo  
+- `/deposit` — zet geld op de bank  
+- `/withdraw` — haal geld van de bank  
+- `/work` — werk voor een beloning  
+- `/crime` — waag een gok met risico’s  
+- `/rob` — probeer een ander te beroven  
+- `/shop` — bekijk beschikbare items  
+- `/inventory` — bekijk je spullen  
+- `/eco` — economiebeheer (admin)  
+- `/jobstats` — statistieken van je job  
 
+---
 
-**Levels**
-- Levels aan zetten via /config level
-- invite-log aan zetten via /config member_count
-- Level = dit toont uw eigen level
-- leaderbord = dit toont alle top 10 leden van de guild
-- voice levels,
+### 🎉 Fun
+- `/birthday` — stel je verjaardag in (met meldingen)  
+- `/tellen` — tellen in een channel (counting game)  
+- `/jackblack` — blackjack spel  
 
-**Fun**
-- Birthday
-- tellen + /config opties
+---
+
+### 📈 Levels
+- `/level` — bekijk je huidige level  
+- `/leaderboard` — toon de top 10  
+- `/setlevel` — stel handmatig een level in (admin)  
+- `/resetlevels` — reset alle levels  
+
+---
+
+### 🛡️ Moderatie
+- `/ban` — ban een gebruiker  
+- `/kick` — kick een gebruiker  
+- `/warn` — waarschuw een gebruiker  
+- `/clear` — verwijder berichten  
+- `/ticket` — maak een ticket aan  
+- `/close` — sluit een ticket  
+
+---
+
+### 🎟️ Ticketsysteem
+Met knoppen en configuratie:
+- Ticket-panel maken  
+- Ticket openen / sluiten  
+- Ticket claimen  
+- Configuratie via `/config`  
+(gehandeld via: `ticketButtonHandler.js`, `ticketConfig.js`, `ticketCreate.js`, `ticketPanelManager.js`)  
+
+---
+
+### 🔧 Events & Utilities
+**Events:**
+- `guildMemberAdd` — welkom events  
+- `messageCreate` — berichtenhandling  
+- `interactionCreate` — slash commands & knoppen  
+- `voiceStateUpdate` — voice events (bv. levels)  
+- `shopInteraction` — interacties in de shop  
+- `countingHelper` — helper voor het tel-spel  
+- `ready` — start-up logica  
+
+**Utils & Helpers:**
+- `birthdaySystem` & `birthdayScheduler` — verjaardagsmeldingen  
+- `ticketSystem` & `ticketPanel` — ticketbeheer  
+- `database.js` — database connectie  
+- `colorValidator.js` — validatie van kleuren  
+- `formatMessage.js` — nette berichtopmaak  
+- `ack.js` — acknowledgment utility  
+
+---
   
 ## Requirements
 
