@@ -19,7 +19,12 @@ export default {
                 await command.execute(interaction);
             } catch (error) {
                 console.error(`❌ Error executing command ${interaction.commandName}:`, error);
-                
+
+                // If interaction is unknown (10062) or already acknowledged (40060), do not attempt to reply
+                if (error && (error.code === 10062 || error.code === 40060)) {
+                    return;
+                }
+
                 // Only try to respond if we haven't already
                 if (!interaction.replied && !interaction.deferred) {
                     try {
@@ -28,10 +33,13 @@ export default {
                             .setTitle('❌ Command Fout')
                             .setDescription('Er is een fout opgetreden bij het uitvoeren van dit commando.')
                             .setTimestamp();
-                        
+
                         await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
                     } catch (replyError) {
-                        console.error('❌ Failed to send command error message:', replyError.message);
+                        // Suppress noisy logs for already-acknowledged/unknown interaction
+                        if (!(replyError && (replyError.code === 40060 || replyError.code === 10062))) {
+                            console.error('❌ Failed to send command error message:', replyError.message);
+                        }
                     }
                 }
             }

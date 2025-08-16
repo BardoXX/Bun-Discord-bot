@@ -573,49 +573,6 @@ export default {
                         .setDescription('Invite tracking aan/uit')
                         .setRequired(true))
                 .addChannelOption(option =>
-                    option.setName('log_kanaal')
-                        .setDescription('Het kanaal waar invite logs komen')
-                        .addChannelTypes(ChannelType.GuildText)
-                        .setRequired(false)))
-        .addSubcommand(subcommand =>
-                subcommand
-                    .setName('warns')
-                    .setDescription('Waarschuwingssysteem instellen')
-                    .addBooleanOption(option =>
-                        option.setName('enabled')
-                            .setDescription('Waarschuwingssysteem aan/uit')
-                            .setRequired(true)))
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('inventory')
-                .setDescription('Inventory systeem instellingen')
-                .addBooleanOption(option =>
-                    option.setName('enabled')
-                        .setDescription('Inventory systeem aan/uit')
-                        .setRequired(true))
-                .addBooleanOption(option =>
-                    option.setName('public_viewing')
-                        .setDescription('Mogen users elkaars inventory bekijken?')
-                        .setRequired(false))
-                .addIntegerOption(option =>
-                    option.setName('max_items_per_category')
-                        .setDescription('Maximum aantal items per categorie (0 = onbeperkt)')
-                        .setRequired(false)
-                        .setMinValue(0)
-                        .setMaxValue(100)))
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('antiinvite')
-                .setDescription('Anti-invite systeem instellingen')
-                .addBooleanOption(option =>
-                    option.setName('enabled')
-                        .setDescription('Anti-invite systeem aan/uit')
-                        .setRequired(false))
-                .addBooleanOption(option =>
-                    option.setName('default_state')
-                        .setDescription('Standaard staat voor anti-invite (aan/uit)')
-                        .setRequired(false))
-                .addChannelOption(option =>
                     option.setName('add_channel')
                         .setDescription('Voeg een kanaal toe aan de anti-invite lijst')
                         .addChannelTypes(ChannelType.GuildText)
@@ -695,6 +652,33 @@ export default {
                     option.setName('remove_exempt_role')
                         .setDescription('Verwijder een vrijgestelde rol')
                         .setRequired(false)))
+                .addSubcommand(subcommand =>
+            subcommand
+                .setName('economy')
+                .setDescription('Economie-instellingen')
+                .addBooleanOption(option =>
+                    option.setName('rob_enabled')
+                        .setDescription('Zet het /rob commando aan of uit')
+                        .setRequired(true)
+                )
+                .addBooleanOption(option =>
+                    option.setName('inventory_enabled')
+                        .setDescription('Inventory systeem aan/uit (ook via economy)')
+                        .setRequired(false)
+                )
+                .addBooleanOption(option =>
+                    option.setName('inventory_public_viewing')
+                        .setDescription('Mogen users elkaars inventory bekijken?')
+                        .setRequired(false)
+                )
+                .addIntegerOption(option =>
+                    option.setName('inventory_max_items_per_category')
+                        .setDescription('Max items per categorie (0 = onbeperkt)')
+                        .setMinValue(0)
+                        .setMaxValue(100)
+                        .setRequired(false)
+                )
+        )
         .addSubcommand(subcommand =>
             subcommand
                 .setName('view')
@@ -743,14 +727,14 @@ export default {
                 case 'warns':
                     await handleWarnsConfig(interaction, db);
                     break;
-                case 'inventory':
-                    await handleInventoryConfig(interaction, db);
-                    break;
                 case 'antiinvite':
                     await handleAntiInviteConfig(interaction, db);
                     break;
                 case 'antispam':
                     await handleAntiSpamConfig(interaction, db);
+                    break;
+                case 'economy':
+                    await handleEconomyConfig(interaction, db);
                     break;
                 default:
                     console.error(`❌ [config] Unknown subcommand: ${subcommand}`);
@@ -861,7 +845,8 @@ async function ensureConfigTableExists(db) {
             { name: 'warns_enabled', type: 'INTEGER' },
             { name: 'inventory_enabled', type: 'INTEGER' },
             { name: 'inventory_public_viewing', type: 'INTEGER' },
-            { name: 'inventory_max_items_per_category', type: 'INTEGER' }
+            { name: 'inventory_max_items_per_category', type: 'INTEGER' },
+            { name: 'rob_enabled', type: 'INTEGER' },
         ];
 
         const existingColumns = db.prepare('PRAGMA table_info(guild_config)').all().map(c => c.name);
@@ -882,6 +867,64 @@ async function ensureConfigTableExists(db) {
     } catch (e) {
         console.error('❌ [config] Error ensuring guild_config table exists:', e);
     }
+}
+
+// Economy config: toggle rob feature
+async function handleEconomyConfig(interaction, db) {
+    const guildId = interaction.guild.id;
+    const robEnabled = interaction.options.getBoolean('rob_enabled');
+    const inventoryEnabled = interaction.options.getBoolean('inventory_enabled');
+    const inventoryPublic = interaction.options.getBoolean('inventory_public_viewing');
+    const inventoryMaxPerCat = interaction.options.getInteger('inventory_max_items_per_category');
+
+    // Ensure row exists
+    let existing = db.prepare('SELECT guild_id FROM guild_config WHERE guild_id = ?').get(guildId);
+    if (!existing) {
+        db.prepare('INSERT INTO guild_config (guild_id, rob_enabled) VALUES (?, 0)').run(guildId);
+    }
+
+    // Build dynamic updates for provided options
+    const updates = [];
+    const values = [];
+    if (robEnabled !== null && robEnabled !== undefined) {
+        updates.push('rob_enabled = ?');
+        values.push(robEnabled ? 1 : 0);
+    }
+    if (inventoryEnabled !== null && inventoryEnabled !== undefined) {
+        updates.push('inventory_enabled = ?');
+        values.push(inventoryEnabled ? 1 : 0);
+    }
+    if (inventoryPublic !== null && inventoryPublic !== undefined) {
+        updates.push('inventory_public_viewing = ?');
+        values.push(inventoryPublic ? 1 : 0);
+    }
+    if (inventoryMaxPerCat !== null && inventoryMaxPerCat !== undefined) {
+        updates.push('inventory_max_items_per_category = ?');
+        values.push(inventoryMaxPerCat);
+    }
+
+    if (updates.length > 0) {
+        const sql = `UPDATE guild_config SET ${updates.join(', ')} WHERE guild_id = ?`;
+        db.prepare(sql).run(...values, guildId);
+    }
+
+    // Fetch current settings to display
+    const cfg = db.prepare('SELECT rob_enabled, inventory_enabled, inventory_public_viewing, inventory_max_items_per_category FROM guild_config WHERE guild_id = ?').get(guildId) || {};
+    const color = cfg.rob_enabled ? '#00cc66' : '#ff9900';
+
+    const embed = new EmbedBuilder()
+        .setColor(color)
+        .setTitle('💰 Economie & Inventory Instellingen Bijgewerkt')
+        .addFields(
+            { name: 'Rob commando', value: cfg.rob_enabled ? 'Aan' : 'Uit', inline: true },
+            { name: 'Inventory', value: cfg.inventory_enabled ? 'Aan' : 'Uit', inline: true },
+            { name: 'Public viewing', value: cfg.inventory_public_viewing ? 'Aan' : 'Uit', inline: true },
+            { name: 'Max per categorie', value: (cfg.inventory_max_items_per_category ?? 0) === 0 ? 'Onbeperkt' : String(cfg.inventory_max_items_per_category), inline: true },
+        )
+        .setDescription('Je kunt dit later opnieuw aanpassen via `/config economy`.')
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
 }
 
 function createLevelingTables(db) {
@@ -1698,65 +1741,6 @@ async function handleInvitesConfig(interaction, db) {
 }
 
 
-async function handleInventoryConfig(interaction, db) {
-    const guildId = interaction.guild.id;
-
-    const existing = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?").get(guildId);
-    if (!existing) {
-        db.prepare("INSERT INTO guild_config (guild_id) VALUES (?)").run(guildId);
-    }
-
-    const enabled = interaction.options.getBoolean('enabled');
-    const publicViewing = interaction.options.getBoolean('public_viewing');
-    const maxItemsPerCategory = interaction.options.getInteger('max_items_per_category');
-
-    const stmt = db.prepare(`
-        UPDATE guild_config 
-        SET inventory_enabled = ?, inventory_public_viewing = ?, inventory_max_items_per_category = ?
-        WHERE guild_id = ?
-    `);
-    
-    stmt.run(
-        enabled ? 1 : 0, 
-        publicViewing !== null ? (publicViewing ? 1 : 0) : null,
-        maxItemsPerCategory,
-        interaction.guild.id
-    );
-
-    console.log(`🎒 [config] Inventory system ${enabled ? 'enabled' : 'disabled'} for guild ${interaction.guild.name}`);
-
-    const embed = new EmbedBuilder()
-        .setColor(enabled ? '#00ff00' : '#ff9900')
-        .setTitle('🎒 Inventory Systeem Configuratie')
-        .addFields(
-            { name: 'Status', value: enabled ? '✅ Ingeschakeld' : '❌ Uitgeschakeld', inline: true }
-        )
-        .setTimestamp();
-
-    if (enabled) {
-        embed.setDescription('Het inventory systeem is nu actief! Gebruikers kunnen hun gekochte items bekijken.');
-        
-        if (publicViewing !== null) {
-            embed.addFields({ 
-                name: 'Publiek Bekijken', 
-                value: publicViewing ? '✅ Toegestaan' : '❌ Niet toegestaan', 
-                inline: true 
-            });
-        }
-
-        if (maxItemsPerCategory !== null) {
-            embed.addFields({ 
-                name: 'Max Items per Categorie', 
-                value: maxItemsPerCategory === 0 ? 'Onbeperkt' : maxItemsPerCategory.toString(), 
-                inline: true 
-            });
-        }
-    } else {
-        embed.setDescription('Het inventory systeem is uitgeschakeld.');
-    }
-
-    await interaction.editReply({ embeds: [embed] });
-}
 
 async function handleViewConfig(interaction, db) {
     const guildId = interaction.guild.id;
