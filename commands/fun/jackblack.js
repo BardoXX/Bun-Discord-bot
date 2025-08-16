@@ -408,131 +408,28 @@ export default {
             ]
         });
         
-        const filter = i => i.user.id === userId;
-        const collector = response.createMessageComponentCollector({ filter, time: 60000 });
-        
-        collector.on('collect', async i => {
-            if (!gameStates.has(gameId)) {
-                await i.update({ components: [] });
-                return;
-            }
-            
-            const game = gameStates.get(gameId);
-            
-            if (i.customId.startsWith('blackjack_hit')) {
-                const playerValue = game.hit();
+        // Let the global interaction handler manage button clicks.
+        // Implement a manual timeout to auto-end the game if no action within 60s.
+        setTimeout(async () => {
+            try {
+                if (!gameStates.has(gameId)) return;
                 
-                if (game.result === 'bust') {
-                    stmt = db.prepare('UPDATE users SET balance = balance - ? WHERE user_id = ? AND guild_id = ?');
-                    stmt.run(bet, userId, guildId);
-                    
-                    const embed = new EmbedBuilder()
-                        .setColor('#ff0000')
-                        .setTitle('💥 Bust!')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString()} (${game.calculateHandValue(game.dealerHand)})
-\nJe bent gebust en verliest €${bet.toLocaleString()}`)
-                        .setTimestamp();
-                    
-                    await i.update({ embeds: [embed], components: [] });
-                    gameStates.delete(gameId);
-                } else {
-                    const embed = new EmbedBuilder()
-                        .setColor('#0099ff')
-                        .setTitle('🃏 Blackjack')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString(true)}
-\nWat wil je doen?`)
-                        .setFooter({ text: `Inzet: €${bet.toLocaleString()}` })
-                        .setTimestamp();
-                    
-                    await i.update({ embeds: [embed] });
-                }
-            } else if (i.customId.startsWith('blackjack_stand')) {
-                const { playerValue, dealerValue } = game.stand();
-                
-                let embed;
-                let color;
-                let winnings = 0;
-                
-                if (game.result === 'dealer_bust') {
-                    winnings = bet;
-                    stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
-                    stmt.run(winnings, userId, guildId);
-                    
-                    color = '#00ff00';
-                    embed = new EmbedBuilder()
-                        .setColor(color)
-                        .setTitle('🎉 Gewonnen!')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString()} (${dealerValue})
-\nDe dealer is gebust! Je wint €${winnings.toLocaleString()}`)
-                        .setTimestamp();
-                } else if (game.result === 'win') { 
-                    winnings = bet;
-                    stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
-                    stmt.run(winnings, userId, guildId);
-                    
-                    color = '#00ff00';
-                    embed = new EmbedBuilder()
-                        .setColor(color)
-                        .setTitle('🎉 Gewonnen!')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString()} (${dealerValue})
-\nJe wint €${winnings.toLocaleString()}`)
-                        .setTimestamp();
-                } else if (game.result === 'lose') {
-                    winnings = -bet;
-                    stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
-                    stmt.run(winnings, userId, guildId);
-                    
-                    color = '#ff0000';
-                    embed = new EmbedBuilder()
-                        .setColor(color)
-                        .setTitle('😔 Verloren')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString()} (${dealerValue})
-\nDe dealer wint. Je verliest €${bet.toLocaleString()}`)
-                        .setTimestamp();
-                } else {
-                    // Push (tie)
-                    color = '#ffff00';
-                    embed = new EmbedBuilder()
-                        .setColor(color)
-                        .setTitle('🤝 Gelijkspel')
-                        .setDescription(`**Jouw hand:** ${game.getPlayerHandString()} (${playerValue})
-**Dealer hand:** ${game.getDealerHandString()} (${dealerValue})
-\nGelijkspel! Je krijgt je inzet terug.`)
-                        .setTimestamp();
-                }
-                
-                await i.update({ embeds: [embed], components: [] });
-                gameStates.delete(gameId);
-            }
-        });
-        
-        collector.on('end', async (collected, reason) => {
-            if (reason === 'time' && gameStates.has(gameId)) {
-                const game = gameStates.get(gameId);
-                
-                // Player loses due to timeout
+                // Deduct bet on timeout
                 stmt = db.prepare('UPDATE users SET balance = balance - ? WHERE user_id = ? AND guild_id = ?');
                 stmt.run(bet, userId, guildId);
                 
-                const embed = new EmbedBuilder()
+                const timeoutEmbed = new EmbedBuilder()
                     .setColor('#ff0000')
                     .setTitle('⏰ Tijd verstreken')
                     .setDescription(`Je hebt te lang gedaan over je keuze. Je verliest €${bet.toLocaleString()}`)
                     .setTimestamp();
                 
-                try {
-                    await interaction.editReply({ embeds: [embed], components: [] });
-                } catch (error) {
-                    console.error('Error updating message:', error);
-                }
-                
+                await interaction.editReply({ embeds: [timeoutEmbed], components: [] });
+            } catch (error) {
+                console.error('Error handling blackjack timeout:', error);
+            } finally {
                 gameStates.delete(gameId);
             }
-        });
+        }, 60000);
     },
 };
