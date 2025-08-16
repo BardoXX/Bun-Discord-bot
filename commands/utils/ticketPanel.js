@@ -108,9 +108,58 @@ export default {
                 .addIntegerOption(option =>
                     option.setName('panel_id')
                         .setDescription('ID van het panel om te plaatsen')
-                        .setRequired(true))),
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('init-defaults')
+                .setDescription('Maak standaard panels en knoppen aan en plaats ze')
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('Kanaal waar de standaard panels geplaatst worden')
+                        .setRequired(true))
+                .addBooleanOption(option =>
+                    option.setName('overwrite')
+                        .setDescription('Bestaande panels verwijderen en opnieuw aanmaken')
+                        .setRequired(false)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('edit')
+                .setDescription('Werk paneel details bij')
+                .addIntegerOption(option =>
+                    option.setName('panel_id')
+                        .setDescription('Paneel ID om te wijzigen')
+                        .setRequired(true))
+                .addStringOption(option =>
+                    option.setName('name')
+                        .setDescription('Nieuwe paneelnaam')
+                        .setRequired(false))
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('Nieuw kanaal om te plaatsen')
+                        .setRequired(false))
+                .addStringOption(option =>
+                    option.setName('title')
+                        .setDescription('Nieuwe embed titel')
+                        .setRequired(false))
+                .addStringOption(option =>
+                    option.setName('description')
+                        .setDescription('Nieuwe embed beschrijving')
+                        .setRequired(false))
+                .addStringOption(option =>
+                    option.setName('color')
+                        .setDescription('Nieuwe embed kleur (hex)')
+                        .setRequired(false))),
 
     async execute(interaction) {
+        // Deprecation: point users to the new wizard
+        const deprecate = new EmbedBuilder()
+            .setColor('#ff9900')
+            .setTitle('⚠️ Commando verplaatst')
+            .setDescription('Gebruik voortaan `/config tickets` voor het aanmaken en beheren van ticket panelen (wizard).')
+            .setTimestamp();
+        await interaction.reply({ embeds: [deprecate], ephemeral: true });
+        return;
+
         const db = interaction.client.db;
         const subcommand = interaction.options.getSubcommand();
         
@@ -140,6 +189,12 @@ export default {
                 case 'post':
                     await handlePostPanel(interaction, db);
                     break;
+                case 'init-defaults':
+                    await handleInitDefaults(interaction, db);
+                    break;
+                case 'edit':
+                    await handleEditPanel(interaction, db);
+                    break;
                 default:
                     const embed = new EmbedBuilder()
                         .setColor('#ff0000')
@@ -148,6 +203,151 @@ export default {
                         .setTimestamp();
                     await interaction.reply({ embeds: [embed], ephemeral: true });
             }
+
+// Create a set of default panels and buttons, then post them
+async function handleInitDefaults(interaction, db) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const channel = interaction.options.getChannel('channel');
+    const overwrite = interaction.options.getBoolean('overwrite') || false;
+
+    try {
+        if (overwrite) {
+            const panels = getTicketPanelsForGuild(db, interaction.guild.id);
+            for (const p of panels) {
+                deleteTicketPanel(db, p.id);
+            }
+            clearPanelCache();
+        }
+
+        // If already has panels and not overwriting, abort to avoid duplicates
+        const existing = getTicketPanelsForGuild(db, interaction.guild.id);
+        if (existing.length > 0 && !overwrite) {
+            const embed = new EmbedBuilder()
+                .setColor('#ff9900')
+                .setTitle('⚠️ Reeds Aanwezige Panelen')
+                .setDescription('Er bestaan al panelen. Gebruik overwrite:true om te herinitialiseren.')
+                .setTimestamp();
+            await interaction.editReply({ embeds: [embed] });
+            return;
+        }
+
+        const presets = [
+            { name: 'Support', title: '🎫 Support Tickets', description: 'Vraag hier hulp aan het team.', color: '#2f3136', buttons: [
+                { label: 'Algemene Hulp', style: 'PRIMARY', emoji: '🆘', ticket_type: 'support' },
+                { label: 'Account Probleem', style: 'SECONDARY', emoji: '👤', ticket_type: 'account' },
+            ]},
+            { name: 'Reports', title: '🚨 Reports', description: 'Meld spelers of problemen.', color: '#ff5555', buttons: [
+                { label: 'Speler Report', style: 'DANGER', emoji: '🚨', ticket_type: 'player-report' },
+                { label: 'Bug Report', style: 'SECONDARY', emoji: '🐞', ticket_type: 'bug-report' },
+            ]},
+            { name: 'Appeals', title: '📝 Appeals', description: 'Vraag een unban/unmute aan.', color: '#ffaa00', buttons: [
+                { label: 'Unban Aanvraag', style: 'SUCCESS', emoji: '📝', ticket_type: 'unban' },
+                { label: 'Unmute Aanvraag', style: 'SUCCESS', emoji: '🔈', ticket_type: 'unmute' },
+            ]},
+        ];
+
+        const created = [];
+        for (const preset of presets) {
+            const panel = await createTicketPanel(db, interaction.guild.id, preset.name, channel.id, {
+                title: preset.title,
+                description: preset.description,
+                color: preset.color,
+            });
+            for (const btn of preset.buttons) {
+                addPanelButton(db, panel.id, {
+                    label: btn.label,
+                    style: btn.style,
+                    emoji: btn.emoji,
+                    ticket_type: btn.ticket_type,
+                    use_form: false,
+                    form_fields: null,
+                    role_requirement: null,
+                });
+            }
+            clearButtonCache();
+            const message = await postTicketPanel(db, interaction.client, panel.id);
+            created.push({ panel, message });
+        }
+
+        const embed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('✅ Standaard Panelen Aangemaakt')
+            .setDescription(`Er zijn ${created.length} panelen aangemaakt in <#${channel.id}>`)
+            .setTimestamp();
+        for (const c of created) {
+            embed.addFields({ name: `${c.panel.panel_name} (ID: ${c.panel.id})`, value: `[Bericht](${c.message.url})`, inline: false });
+        }
+        await interaction.editReply({ embeds: [embed] });
+
+    } catch (error) {
+        throw new Error(`Failed to init defaults: ${error.message}`);
+    }
+}
+
+// Edit panel properties quickly
+async function handleEditPanel(interaction, db) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const panelId = interaction.options.getInteger('panel_id');
+    const name = interaction.options.getString('name');
+    const chan = interaction.options.getChannel('channel');
+    const title = interaction.options.getString('title');
+    const description = interaction.options.getString('description');
+    const color = interaction.options.getString('color');
+
+    // Validate optional color if provided
+    if (color && !/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color)) {
+        const embed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Ongeldige Kleur')
+            .setDescription('Gebruik een geldige hex kleurcode (bijv. #ff0000)')
+            .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+
+    const panel = db.prepare('SELECT * FROM ticket_panels WHERE id = ? AND guild_id = ?').get(panelId, interaction.guild.id);
+    if (!panel) {
+        const embed = new EmbedBuilder()
+            .setColor('#ff0000')
+            .setTitle('❌ Panel Niet Gevonden')
+            .setDescription(`Er is geen panel met ID ${panelId} gevonden voor deze server.`)
+            .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+
+    try {
+        const newName = name ?? panel.panel_name;
+        const newChannelId = chan?.id ?? panel.channel_id;
+        const newTitle = title ?? panel.embed_title;
+        const newDesc = description ?? panel.embed_description;
+        const newColor = color ?? panel.embed_color;
+
+        const stmt = db.prepare(`
+            UPDATE ticket_panels
+            SET panel_name = ?, channel_id = ?, embed_title = ?, embed_description = ?, embed_color = ?
+            WHERE id = ?
+        `);
+        stmt.run(newName, newChannelId, newTitle, newDesc, newColor, panelId);
+
+        clearPanelCache();
+
+        const embed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('✅ Panel Bijgewerkt')
+            .setDescription(`Panel (ID: ${panelId}) is bijgewerkt.`)
+            .addFields(
+                { name: 'Naam', value: newName, inline: true },
+                { name: 'Kanaal', value: `<#${newChannelId}>`, inline: true },
+            )
+            .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+        throw new Error(`Failed to edit panel: ${error.message}`);
+    }
+}
         } catch (error) {
             console.error('Error in ticket-panel command:', error);
             

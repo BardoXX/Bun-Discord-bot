@@ -31,19 +31,51 @@ export async function createTicketChannelOrThread(interaction, db, config, ticke
  */
 async function createTicketChannel(interaction, db, config, ticketType, formData) {
     try {
-        const channelName = `ticket-${ticketType}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-        
-        const channel = await interaction.guild.channels.create({
+        const channelName = `ticket-${ticketType}-${interaction.user.username}`
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-')
+            .slice(0, 90);
+
+        // Validate parent category
+        let parentId = config.ticket_category_id;
+        let parentChannel = null;
+        try {
+            if (parentId) {
+                parentChannel = await interaction.guild.channels.fetch(parentId).catch(() => null);
+                if (!parentChannel || parentChannel.type !== ChannelType.GuildCategory) {
+                    parentChannel = null;
+                }
+            }
+        } catch {
+            parentChannel = null;
+        }
+
+        const baseOptions = {
             name: channelName,
             type: ChannelType.GuildText,
-            parent: config.ticket_category_id,
             permissionOverwrites: [
                 { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
                 { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
                 { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
             ],
-        });
-        
+        };
+
+        // Try with parent first (if valid), then without as fallback
+        let channel;
+        try {
+            channel = await interaction.guild.channels.create({
+                ...baseOptions,
+                ...(parentChannel ? { parent: parentChannel.id } : {})
+            });
+        } catch (e1) {
+            // Retry without parent
+            try {
+                channel = await interaction.guild.channels.create(baseOptions);
+            } catch (e2) {
+                throw new Error(`Failed to create ticket channel: ${e2.message || e1.message}`);
+            }
+        }
+
         // Send initial ticket message
         await sendTicketInitialMessage(channel, interaction.user, ticketType, formData);
         
@@ -126,13 +158,53 @@ async function sendTicketInitialMessage(channel, user, ticketType, formData) {
     
     // Add form data if present
     if (formData) {
-        let formDescription = '';
-        for (const [key, value] of Object.entries(formData)) {
-            formDescription += `**${key}:** ${value}\n`;
-        }
-        
-        if (formDescription) {
-            embed.addFields({ name: '📄 Formulier Informatie', value: formDescription, inline: false });
+        const truncate = (s, max) => {
+            const str = String(s ?? '-');
+            return str.length > max ? str.slice(0, max - 1) + '…' : str;
+        };
+        const existingEmbedFields = 3; // we already added 3 fields above
+        const headerField = { name: '📄 Formulier Informatie', value: '\u200B', inline: false };
+        const MAX_EMBED_FIELDS = 25;
+        const NAME_MAX = 256;
+        const VALUE_MAX = 1024;
+
+        if (Array.isArray(formData)) {
+            // New format: array of { name, value }
+            let cleanFields = formData
+                .filter(f => f && typeof f.name === 'string')
+                .map(f => ({
+                    name: truncate(f.name, NAME_MAX),
+                    value: truncate(f.value, VALUE_MAX),
+                    inline: formData.length >= 4 // show columns if many
+                }));
+
+            // Respect Discord's 25 fields limit
+            const remaining = Math.max(0, MAX_EMBED_FIELDS - existingEmbedFields);
+            if (remaining > 0) {
+                // Reserve one slot for the header if we have any fields to show
+                const slotsForData = Math.max(0, remaining - 1);
+                cleanFields = cleanFields.slice(0, slotsForData);
+                if (cleanFields.length) {
+                    embed.addFields(headerField);
+                    embed.addFields(cleanFields);
+                }
+            }
+        } else if (typeof formData === 'object') {
+            // Legacy object format -> convert to fields
+            let entries = Object.entries(formData).map(([k, v]) => ({
+                name: truncate(k, NAME_MAX),
+                value: truncate(v, VALUE_MAX),
+                inline: Object.keys(formData).length >= 4
+            }));
+            const remaining = Math.max(0, MAX_EMBED_FIELDS - existingEmbedFields);
+            if (remaining > 0) {
+                const slotsForData = Math.max(0, remaining - 1);
+                entries = entries.slice(0, slotsForData);
+                if (entries.length) {
+                    embed.addFields(headerField);
+                    embed.addFields(entries);
+                }
+            }
         }
     }
     

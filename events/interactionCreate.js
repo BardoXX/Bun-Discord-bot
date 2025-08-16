@@ -1,8 +1,9 @@
 // events/interactionCreate.js
 import { Events, EmbedBuilder } from 'discord.js';
+import { handleTicketWizardComponent } from '../commands/configuratie/config.js';
 import { createTicket, claimTicket, closeTicket } from '../commands/utils/ticketSystem.js';
 import { handleShopInteraction, handleShopSelectMenu, handleShopButton } from '../commands/economie/shop.js';
-import { handleTicketButtonInteraction } from '../modules/tickets/ticketButtonHandler.js';
+import { handleTicketButtonInteraction, handleTicketFormSubmit } from '../modules/tickets/ticketButtonHandler.js';
 
 export default {
     name: Events.InteractionCreate,
@@ -45,8 +46,31 @@ export default {
             }
         }
         
-        // Handle select menu and button interactions for shop
-        else if (interaction.isStringSelectMenu() || interaction.isButton()) {
+        // Handle select menu, button, and modal interactions for wizard/shop/others
+        else if (
+            interaction.isChannelSelectMenu?.() ||
+            interaction.isStringSelectMenu?.() ||
+            interaction.isUserSelectMenu?.() ||
+            interaction.isRoleSelectMenu?.() ||
+            interaction.isMentionableSelectMenu?.() ||
+            interaction.isButton() ||
+            interaction.isModalSubmit?.()
+        ) {
+            // Route ticket wizard and management interactions first
+            if (
+                interaction.customId && (
+                    interaction.customId.startsWith('ticket_wizard_') ||
+                    interaction.customId.startsWith('ticket_manage_')
+                )
+            ) {
+                try {
+                    await handleTicketWizardComponent(interaction);
+                } catch (err) {
+                    console.error('❌ Ticket wizard routing error:', err);
+                }
+                return;
+            }
+
             // Check if it's a shop interaction - DON'T defer here, let shopInteraction handle it
             if (interaction.customId && interaction.customId.startsWith('shop_')) {
                 console.log(`🛒 Processing shop interaction: ${interaction.customId}`);
@@ -74,6 +98,16 @@ export default {
                 return;
             }
 
+            // Handle ticket form modal submissions
+            if (interaction.isModalSubmit?.() && interaction.customId && interaction.customId.startsWith('ticket_form_')) {
+                try {
+                    await handleTicketFormSubmit(interaction, interaction.client.db);
+                } catch (err) {
+                    console.error('❌ Ticket form submit error:', err);
+                }
+                return;
+            }
+
             // Handle other button interactions (tickets, blackjack, etc.)
             if (interaction.isButton()) {
                 const customId = interaction.customId;
@@ -81,7 +115,7 @@ export default {
 
                 try {
                     // Handle ticket panel buttons (dynamic)
-                    if (customId.startsWith('ticket_btn_')) {
+                    if (customId.startsWith('ticket_button_')) {
                         await handleTicketButtonInteraction(interaction);
                     }
                     // Handle Blackjack interactions

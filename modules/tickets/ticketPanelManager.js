@@ -30,6 +30,32 @@ export async function createTicketPanel(db, guildId, panelName, channelId, embed
 }
 
 /**
+ * Updates the posted panel message if message_id exists, otherwise posts a new one
+ * @param {Object} db
+ * @param {Object} client
+ * @param {number} panelId
+ */
+export async function updateOrPostTicketPanel(db, client, panelId) {
+    const panel = getTicketPanel(db, panelId);
+    if (!panel) throw new Error('Panel not found');
+
+    const channel = await client.channels.fetch(panel.channel_id);
+    const embed = createPanelEmbed(panel);
+    const actionRows = createPanelButtons(db, panelId);
+
+    if (panel.message_id) {
+        try {
+            const message = await channel.messages.fetch(panel.message_id);
+            await message.edit({ embeds: [embed], components: actionRows });
+            return message;
+        } catch (e) {
+            // If message not found, post new
+        }
+    }
+    return await postTicketPanel(db, client, panelId);
+}
+
+/**
  * Gets a ticket panel by ID
  * @param {Object} db - Database instance
  * @param {number} panelId - Panel ID
@@ -49,6 +75,24 @@ export function getTicketPanel(db, panelId) {
 export function getTicketPanelsForGuild(db, guildId) {
     const stmt = db.prepare('SELECT * FROM ticket_panels WHERE guild_id = ?');
     return stmt.all(guildId);
+}
+
+/**
+ * Updates a ticket panel's embed and/or channel
+ * @param {Object} db
+ * @param {number} panelId
+ * @param {{embed_title?:string, embed_description?:string, embed_color?:string, channel_id?:string}} updates
+ */
+export function updateTicketPanel(db, panelId, updates) {
+    const fields = [];
+    const values = [];
+    if (updates.embed_title !== undefined) { fields.push('embed_title = ?'); values.push(updates.embed_title); }
+    if (updates.embed_description !== undefined) { fields.push('embed_description = ?'); values.push(updates.embed_description); }
+    if (updates.embed_color !== undefined) { fields.push('embed_color = ?'); values.push(updates.embed_color); }
+    if (updates.channel_id !== undefined) { fields.push('channel_id = ?'); values.push(updates.channel_id); }
+    if (!fields.length) return;
+    const stmt = db.prepare(`UPDATE ticket_panels SET ${fields.join(', ')} WHERE id = ?`);
+    stmt.run(...values, panelId);
 }
 
 /**

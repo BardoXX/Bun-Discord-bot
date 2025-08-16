@@ -12,6 +12,27 @@ export function getTicketConfig(db, guildId) {
 }
 
 /**
+ * Updates a button's fields
+ * @param {Object} db
+ * @param {number} buttonId
+ * @param {{label?:string, style?:string, emoji?:string, ticket_type?:string, use_form?:boolean, form_fields?:any, role_requirement?:string|null}} updates
+ */
+export function updatePanelButton(db, buttonId, updates) {
+    const fields = [];
+    const values = [];
+    if (updates.label !== undefined) { fields.push('label = ?'); values.push(updates.label); }
+    if (updates.style !== undefined) { fields.push('style = ?'); values.push(updates.style); }
+    if (updates.emoji !== undefined) { fields.push('emoji = ?'); values.push(updates.emoji); }
+    if (updates.ticket_type !== undefined) { fields.push('ticket_type = ?'); values.push(updates.ticket_type); }
+    if (updates.use_form !== undefined) { fields.push('use_form = ?'); values.push(updates.use_form ? 1 : 0); }
+    if (updates.form_fields !== undefined) { fields.push('form_fields = ?'); values.push(updates.form_fields ? JSON.stringify(updates.form_fields) : null); }
+    if (updates.role_requirement !== undefined) { fields.push('role_requirement = ?'); values.push(updates.role_requirement || null); }
+    if (!fields.length) return;
+    const stmt = db.prepare(`UPDATE ticket_buttons SET ${fields.join(', ')} WHERE id = ?`);
+    stmt.run(...values, buttonId);
+}
+
+/**
  * Sets ticket configuration for a guild
  * @param {Object} db - Database instance
  * @param {string} guildId - Guild ID
@@ -58,6 +79,17 @@ export function setTicketConfig(db, guildId, config) {
 export function getButtonsForPanel(db, panelId) {
     const stmt = db.prepare('SELECT * FROM ticket_buttons WHERE panel_id = ? ORDER BY id');
     return stmt.all(panelId);
+}
+
+/**
+ * Gets a single button by ID
+ * @param {Object} db
+ * @param {number} buttonId
+ * @returns {Object|null}
+ */
+export function getButton(db, buttonId) {
+    const stmt = db.prepare('SELECT * FROM ticket_buttons WHERE id = ?');
+    return stmt.get(buttonId);
 }
 
 /**
