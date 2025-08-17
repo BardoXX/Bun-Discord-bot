@@ -1,5 +1,5 @@
 // commands/economie/shop.js
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -128,7 +128,7 @@ export async function handleShopSelectMenu(interaction) {
         const button = new ButtonBuilder()
             .setCustomId(`shop_buy_${item.id}`)
             .setLabel(`${item.name} (€${item.price})`)
-            .setStyle('PRIMARY')
+            .setStyle(ButtonStyle.Primary)
             .setDisabled(userBalance < item.price); // Disable if user can't afford
         
         buttons.push(button);
@@ -144,7 +144,7 @@ export async function handleShopSelectMenu(interaction) {
     const backButton = new ButtonBuilder()
         .setCustomId('shop_back')
         .setLabel('Terug naar categorieën')
-        .setStyle('SECONDARY');
+        .setStyle(ButtonStyle.Secondary);
     
     const backRow = new ActionRowBuilder().addComponents(backButton);
     rows.push(backRow);
@@ -285,6 +285,58 @@ async function handleItemPurchase(interaction, itemId) {
     let logStmt = db.prepare('INSERT INTO purchase_logs (user_id, guild_id, item_id, item_name, price, timestamp) VALUES (?, ?, ?, ?, ?, ?)');
     logStmt.run(userId, guildId, item.id, item.name, item.price, new Date().toISOString());
 
+    // Apply item effect based on type / item_data
+    let effectMessages = [];
+    try {
+        const data = item.item_data ? JSON.parse(item.item_data) : {};
+        const type = (item.type || 'other').toLowerCase();
+
+        if (type === 'role' || type === 'rank') {
+            const roleId = data.role_id || data.role || data.id;
+            const role = roleId ? interaction.guild.roles.cache.get(String(roleId)) : null;
+            const member = await interaction.guild.members.fetch(userId).catch(() => null);
+            if (role && member) {
+                await member.roles.add(role).catch(() => {});
+                effectMessages.push(`Rol toegekend: <@&${role.id}>`);
+            } else {
+                effectMessages.push('Let op: rol kon niet worden toegekend (ongeldige rol of permissies).');
+            }
+        } else if (type === 'booster' || type === 'multiplier') {
+            const boosterType = (data.type || 'global').toLowerCase();
+            const multiplier = Number(data.multiplier || data.value || 1);
+            let expiresAt = null;
+            if (data.duration_hours) {
+                const ms = Number(data.duration_hours) * 60 * 60 * 1000;
+                expiresAt = new Date(Date.now() + ms).toISOString();
+            }
+            // Upsert into user_boosters
+            const upsert = db.prepare(`
+                INSERT INTO user_boosters (user_id, guild_id, type, multiplier, active, expires_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(user_id, guild_id, type) DO UPDATE SET
+                  multiplier=excluded.multiplier,
+                  active=1,
+                  expires_at=excluded.expires_at
+            `);
+            upsert.run(userId, guildId, boosterType, multiplier, expiresAt);
+            effectMessages.push(`Booster geactiveerd: ${boosterType} x${multiplier}${expiresAt ? ` (tot ${new Date(expiresAt).toLocaleString()})` : ''}`);
+        } else {
+            // Default: add to inventory
+            const invGet = db.prepare('SELECT quantity FROM user_inventory WHERE user_id = ? AND guild_id = ? AND item_id = ?');
+            const invRow = invGet.get(userId, guildId, item.id);
+            if (invRow) {
+                const invUpdate = db.prepare('UPDATE user_inventory SET quantity = quantity + 1 WHERE user_id = ? AND guild_id = ? AND item_id = ?');
+                invUpdate.run(userId, guildId, item.id);
+            } else {
+                const invInsert = db.prepare('INSERT INTO user_inventory (user_id, guild_id, item_id, quantity, item_data) VALUES (?, ?, ?, 1, ?)');
+                invInsert.run(userId, guildId, item.id, item.item_data || null);
+            }
+            effectMessages.push('Item toegevoegd aan je inventory.');
+        }
+    } catch (e) {
+        effectMessages.push('Let op: effect kon niet volledig toegepast worden.');
+    }
+
     // Create success embed
     const embed = new EmbedBuilder()
         .setColor('#00ff00')
@@ -295,6 +347,7 @@ async function handleItemPurchase(interaction, itemId) {
             { name: 'Prijs', value: `€${item.price}`, inline: true },
             { name: 'Nieuw Saldo', value: `€${newBalance}`, inline: true }
         )
+        .setFooter({ text: effectMessages.join(' • ') || ' ' })
         .setTimestamp();
 
     await interaction.reply({ embeds: [embed], ephemeral: true });

@@ -83,7 +83,7 @@ export default {
 };
 
 async function handleStatus(interaction, config, countingChannel) {
-    const currentNumber = config.counting_number || 0;
+    const currentNumber = config.counting_number != null ? Number(config.counting_number) : 0;
     
     const embed = new EmbedBuilder()
         .setColor('#0099ff')
@@ -93,7 +93,7 @@ async function handleStatus(interaction, config, countingChannel) {
             { name: 'Huidig Getal', value: `${currentNumber}`, inline: true },
             { name: 'Volgend Getal', value: `${currentNumber + 1}`, inline: true }
         )
-        .setDescription(`Het tel spel is actief in ${countingChannel}. Het volgende getal dat getypt moet worden is **${currentNumber + 1}**.`)
+        .setDescription(`Het tel spel is actief in ${countingChannel}. Het volgende getal dat getypt moet worden is **${currentNumber + 1}**.\n\nLet op: beheer dit voortaan via \`/config economy\` → 🔢 Counting beloningen.`)
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });

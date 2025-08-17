@@ -1,6 +1,66 @@
 // commands/fun/jackblack.js
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 
+function toNumber(v, def = 0) {
+    try {
+        if (v === null || v === undefined) return def;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : def;
+    } catch { return def; }
+}
+
+function toBool(v, def = false) {
+    try {
+        if (v === null || v === undefined) return def;
+        if (typeof v === 'boolean') return v;
+        if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
+        if (typeof v === 'bigint') return v !== 0n;
+        const s = String(v).trim().toLowerCase();
+        if (['1','true','yes','on','aan'].includes(s)) return true;
+        if (['0','false','no','off','uit'].includes(s)) return false;
+        const n = Number(s);
+        if (!Number.isNaN(n)) return n !== 0;
+        return def;
+    } catch { return def; }
+}
+
+function getGuildBlackjackConfig(db, guildId) {
+    try {
+        const row = db.prepare(`
+            SELECT 
+                COALESCE(bj_enabled, 0) AS enabled,
+                COALESCE(bj_min_bet, 10) AS min_bet,
+                COALESCE(bj_max_bet, 1000) AS max_bet,
+                COALESCE(bj_house_edge, 0.01) AS house_edge,
+                COALESCE(bj_cooldown_seconds, 30) AS cooldown
+            FROM guild_config WHERE guild_id = ?
+        `).get(guildId) || {};
+        let minBet = Math.max(1, toNumber(row.min_bet, 10));
+        let maxBet = Math.max(1, toNumber(row.max_bet, 1000));
+        if (minBet > maxBet) { const t = minBet; minBet = maxBet; maxBet = t; }
+        return {
+            enabled: toBool(row.enabled, false),
+            minBet,
+            maxBet,
+            cooldown: Math.max(0, toNumber(row.cooldown, 30)),
+            houseEdge: Math.min(0.2, Math.max(0, toNumber(row.house_edge, 0.01)))
+        };
+    } catch {
+        return { enabled: false, minBet: 10, maxBet: 1000, cooldown: 30, houseEdge: 0.01 };
+    }
+}
+
+function ensureUserBjCooldownColumn(db) {
+    try {
+        const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+        if (!cols.includes('last_blackjack')) {
+            db.prepare('ALTER TABLE users ADD COLUMN last_blackjack TEXT').run();
+        }
+    } catch (e) {
+        console.warn('⚠️ Could not ensure users.last_blackjack column:', e?.message);
+    }
+}
+
 const CARD_VALUES = {
     '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
     'J': 10, 'Q': 10, 'K': 10, 'A': 11
@@ -121,9 +181,11 @@ export async function handleBlackjackInteraction(interaction) {
             
             if (game.result === 'dealer_bust') {
                 // Dealer busts - player wins
-                winnings = game.bet;
+                const cfg = getGuildBlackjackConfig(db, game.guildId);
+                winnings = Math.floor(game.bet * (1 - (cfg.houseEdge ?? 0)));
                 stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
                 stmt.run(winnings, game.userId, game.guildId);
+                try { db.prepare('UPDATE users SET last_blackjack = ? WHERE user_id = ? AND guild_id = ?').run(new Date().toISOString(), game.userId, game.guildId); } catch {}
                 
                 color = '#00ff00';
                 embed = new EmbedBuilder()
@@ -135,9 +197,11 @@ export async function handleBlackjackInteraction(interaction) {
                     .setTimestamp();
             } else if (game.result === 'win') {
                 // Player wins
-                winnings = game.bet;
+                const cfg = getGuildBlackjackConfig(db, game.guildId);
+                winnings = Math.floor(game.bet * (1 - (cfg.houseEdge ?? 0)));
                 stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
                 stmt.run(winnings, game.userId, game.guildId);
+                try { db.prepare('UPDATE users SET last_blackjack = ? WHERE user_id = ? AND guild_id = ?').run(new Date().toISOString(), game.userId, game.guildId); } catch {}
                 
                 color = '#00ff00';
                 embed = new EmbedBuilder()
@@ -152,6 +216,7 @@ export async function handleBlackjackInteraction(interaction) {
                 winnings = game.bet;
                 stmt = db.prepare('UPDATE users SET balance = balance - ? WHERE user_id = ? AND guild_id = ?');
                 stmt.run(winnings, game.userId, game.guildId);
+                try { db.prepare('UPDATE users SET last_blackjack = ? WHERE user_id = ? AND guild_id = ?').run(new Date().toISOString(), game.userId, game.guildId); } catch {}
                 
                 color = '#ff0000';
                 embed = new EmbedBuilder()
@@ -325,6 +390,15 @@ export default {
         const userId = interaction.user.id;
         const guildId = interaction.guild.id;
         const bet = interaction.options.getInteger('inzet');
+
+        // Ensure cooldown column exists
+        ensureUserBjCooldownColumn(db);
+
+        // Load server settings
+        const cfg = getGuildBlackjackConfig(db, guildId);
+        if (!cfg.enabled) {
+            return interaction.editReply({ content: '🂡 Blackjack staat uit op deze server.', allowedMentions: { repliedUser: false } });
+        }
         
         let stmt = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?');
         let user = stmt.get(userId, guildId);
@@ -332,9 +406,19 @@ export default {
         if (!user) {
             stmt = db.prepare('INSERT INTO users (user_id, guild_id, balance, bank) VALUES (?, ?, 1000, 0)');
             stmt.run(userId, guildId);
-            user = { balance: 1000, bank: 0 };
+            user = { balance: 1000, bank: 0, last_blackjack: null };
         }
         
+        // Validate bet and config limits
+        if (!Number.isFinite(bet) || bet <= 0) {
+            return await interaction.editReply({ content: '❌ Ongeldig bedrag.', allowedMentions: { repliedUser: false } });
+        }
+        if (bet < cfg.minBet) {
+            return await interaction.editReply({ content: `❌ Minimale inzet is €${cfg.minBet}.`, allowedMentions: { repliedUser: false } });
+        }
+        if (bet > cfg.maxBet) {
+            return await interaction.editReply({ content: `❌ Maximale inzet is €${cfg.maxBet}.`, allowedMentions: { repliedUser: false } });
+        }
         if (user.balance < bet) {
             const embed = new EmbedBuilder()
                 .setColor('#ff0000')
@@ -344,6 +428,17 @@ export default {
             
             return await interaction.editReply({ embeds: [embed] });
         }
+
+        // Cooldown
+        try {
+            const now = new Date();
+            const last = user.last_blackjack ? new Date(user.last_blackjack) : null;
+            const cdMs = Math.max(0, toNumber(cfg.cooldown, 30)) * 1000;
+            if (last && (now - last) < cdMs) {
+                const nextUnix = Math.floor((last.getTime() + cdMs) / 1000);
+                return await interaction.editReply({ content: `⏰ Je kan opnieuw spelen <t:${nextUnix}:R> (om <t:${nextUnix}:T>).` });
+            }
+        } catch {}
         
         const game = new BlackjackGame(userId, guildId, bet);
         game.dealInitialCards();
@@ -356,9 +451,11 @@ export default {
             game.gameOver = true;
             game.result = 'blackjack';
             
-            const winnings = Math.floor(bet * 1.5);
+            const settings = getGuildBlackjackConfig(db, guildId);
+            const winnings = Math.floor(bet * 1.5 * (1 - (settings.houseEdge ?? 0)));
             stmt = db.prepare('UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?');
             stmt.run(winnings, userId, guildId);
+            try { db.prepare('UPDATE users SET last_blackjack = ? WHERE user_id = ? AND guild_id = ?').run(new Date().toISOString(), userId, guildId); } catch {}
             
             const embed = new EmbedBuilder()
                 .setColor('#00ff00')
@@ -417,6 +514,7 @@ export default {
                 // Deduct bet on timeout
                 stmt = db.prepare('UPDATE users SET balance = balance - ? WHERE user_id = ? AND guild_id = ?');
                 stmt.run(bet, userId, guildId);
+                try { db.prepare('UPDATE users SET last_blackjack = ? WHERE user_id = ? AND guild_id = ?').run(new Date().toISOString(), userId, guildId); } catch {}
                 
                 const timeoutEmbed = new EmbedBuilder()
                     .setColor('#ff0000')

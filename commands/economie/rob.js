@@ -54,7 +54,7 @@ export default {
                 const embed = new EmbedBuilder()
                     .setColor('#ff9900')
                     .setTitle('🚫 Rob is uitgeschakeld')
-                    .setDescription('De server heeft het /rob commando uitgeschakeld via /config.')
+                    .setDescription('Het /rob commando is momenteel uitgeschakeld. Een beheerder kan dit aanzetten via `/config economy`.')
                     .setTimestamp();
                 await respond({ embeds: [embed] });
                 return;

@@ -1,6 +1,8 @@
 // events/interactionCreate.js
 import { Events, EmbedBuilder } from 'discord.js';
-import { handleTicketWizardComponent } from '../commands/configuratie/config.js';
+import { handleTicketWizardComponent, handleEconomyWizardComponent } from '../commands/configuratie/config.js';
+import { handleAIWizardComponent } from '../commands/configuratie/aiwizard.js';
+import { handleWorkSelectMenu, handleWorkCooldownInteraction } from '../commands/economie/work.js';
 import { createTicket, claimTicket, closeTicket } from '../commands/utils/ticketSystem.js';
 import { handleShopInteraction, handleShopSelectMenu, handleShopButton } from '../commands/economie/shop.js';
 import { handleTicketButtonInteraction, handleTicketFormSubmit } from '../modules/tickets/ticketButtonHandler.js';
@@ -71,6 +73,33 @@ export default {
                 return;
             }
 
+            // Route economy wizard interactions (buttons/selects/modals)
+            if (
+                interaction.customId && (
+                    interaction.customId.startsWith('eco_wizard_') ||
+                    interaction.customId.startsWith('eco_open_') ||
+                    interaction.customId.startsWith('eco_jobs_') ||
+                    interaction.customId === 'eco_jobs_select'
+                )
+            ) {
+                try {
+                    await handleEconomyWizardComponent(interaction);
+                } catch (err) {
+                    console.error('❌ Economy wizard routing error:', err);
+                }
+                return;
+            }
+
+            // Route AI wizard interactions
+            if (interaction.customId && interaction.customId.startsWith('ai_wizard_')) {
+                try {
+                    await handleAIWizardComponent(interaction);
+                } catch (err) {
+                    console.error('❌ AI wizard routing error:', err);
+                }
+                return;
+            }
+
             // Check if it's a shop interaction - DON'T defer here, let shopInteraction handle it
             if (interaction.customId && interaction.customId.startsWith('shop_')) {
                 console.log(`🛒 Processing shop interaction: ${interaction.customId}`);
@@ -98,6 +127,26 @@ export default {
                 return;
             }
 
+            // Route work select menu
+            if (interaction.isStringSelectMenu?.() && interaction.customId === 'work_select') {
+                try {
+                    await handleWorkSelectMenu(interaction);
+                } catch (err) {
+                    console.error('❌ Work select handling error:', err);
+                }
+                return;
+            }
+
+            // Route work cooldown panel buttons
+            if (interaction.isButton?.() && interaction.customId && interaction.customId.startsWith('work_cd_')) {
+                try {
+                    await handleWorkCooldownInteraction(interaction);
+                } catch (err) {
+                    console.error('❌ Work cooldown button handling error:', err);
+                }
+                return;
+            }
+
             // Handle ticket form modal submissions
             if (interaction.isModalSubmit?.() && interaction.customId && interaction.customId.startsWith('ticket_form_')) {
                 try {
@@ -114,6 +163,11 @@ export default {
                 console.log(`🎛️ Processing button interaction: ${customId}`);
 
                 try {
+                    // Safety: forward any economy wizard/jobs button here too
+                    if (customId && (customId.startsWith('eco_wizard_') || customId.startsWith('eco_open_') || customId.startsWith('eco_jobs_'))) {
+                        await handleEconomyWizardComponent(interaction);
+                        return;
+                    }
                     // Handle ticket panel buttons (dynamic)
                     if (customId.startsWith('ticket_button_')) {
                         await handleTicketButtonInteraction(interaction);

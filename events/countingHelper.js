@@ -92,6 +92,46 @@ export async function handleCountingMessage(message) {
             });
         }
 
+        // Economy: counting rewards
+        try {
+            const rewardCfg = safeDbOperation(() => {
+                const stmt = db.prepare(`SELECT 
+                    COALESCE(counting_reward_enabled, 0) AS enabled,
+                    COALESCE(counting_reward_amount, 5) AS amount,
+                    COALESCE(counting_reward_goal_interval, 10) AS interval,
+                    counting_reward_specific_goals AS goals
+                FROM guild_config WHERE guild_id = ?`);
+                return stmt.get(guildId) || {};
+            }) || {};
+
+            const enabled = !!rewardCfg.enabled;
+            if (enabled) {
+                const interval = Number(rewardCfg.interval || 0);
+                const goalsList = String(rewardCfg.goals || '')
+                    .split(',')
+                    .map(s => parseInt(s.trim(), 10))
+                    .filter(n => Number.isFinite(n) && n > 0);
+                const isSpecificGoal = goalsList.length ? goalsList.includes(messageNumber) : false;
+                const isIntervalGoal = interval > 0 ? (messageNumber % interval === 0) : false;
+                if (isSpecificGoal || isIntervalGoal) {
+                    const amount = Math.max(0, parseInt(rewardCfg.amount, 10) || 0);
+                    if (amount > 0) {
+                        // Ensure user row exists and add balance
+                        safeDbOperation(() => {
+                            db.prepare('INSERT OR IGNORE INTO users (guild_id, user_id, balance) VALUES (?, ?, 0)')
+                              .run(guildId, message.author.id);
+                            db.prepare('UPDATE users SET balance = balance + ? WHERE guild_id = ? AND user_id = ?')
+                              .run(amount, guildId, message.author.id);
+                        });
+                        // React with coin to indicate payout
+                        await message.react('💰').catch(() => {});
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[counting] Error applying counting reward:', e);
+        }
+
     } catch (error) {
         console.error('❌ [counting] Error updating counting number:', error);
         await message.react('❌').catch(err => {
