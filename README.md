@@ -12,6 +12,7 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 ---
 
 ### 💰 Economie
+- `/config economy` — stel alle economy commands in via Wizard
 - `/balance` — bekijk je saldo  
 - `/deposit` — zet geld op de bank  
 - `/withdraw` — haal geld van de bank  
@@ -27,8 +28,7 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 
 ### 🎉 Fun
 - `/birthday` — stel je verjaardag in (met meldingen)  
-- `/tellen` — tellen in een channel (counting game)  
-- `/jackblack` — blackjack spel  
+- `/tellen` — tellen in een channel (counting game)   
 
 ---
 
@@ -51,12 +51,7 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 ---
 
 ### 🎟️ Ticketsysteem
-Met knoppen en configuratie:
-- Ticket-panel maken  
-- Ticket openen / sluiten  
-- Ticket claimen  
-- Configuratie via `/config`  
-(gehandeld via: `ticketButtonHandler.js`, `ticketConfig.js`, `ticketCreate.js`, `ticketPanelManager.js`)  
+- `/config tickets` — dit opent het ticket model
 
 ---
 
