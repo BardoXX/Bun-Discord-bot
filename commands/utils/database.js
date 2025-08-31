@@ -1,5 +1,8 @@
 import Database from 'bun:sqlite';
-import path from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 let db;
 
@@ -10,7 +13,7 @@ export function getDb() {
 
 export function initializeDatabase() {
     try {
-        const dbPath = path.join(__dirname, 'bot.db')
+        const dbPath = join(__dirname, 'bot.db')
         
         db = new Database(dbPath, { 
             create: true,
@@ -774,6 +777,17 @@ function addMissingColumns() {
     if (!ticketConfigColumns.includes('ticket_channel_id')) {
       db.exec(`ALTER TABLE ticket_config ADD COLUMN ticket_channel_id TEXT`);
       console.log("✅ [database] 'ticket_channel_id' column added to ticket_config");
+    }
+
+    // Economy features enable flags (default ON)
+    const ecoFlags = [
+      'eco_balance_enabled','eco_crime_enabled','eco_daily_enabled','eco_deposit_enabled','eco_eco_enabled','eco_jobstats_enabled','eco_shop_enabled','eco_weekly_enabled','eco_withdraw_enabled','eco_work_enabled'
+    ];
+    for (const col of ecoFlags) {
+      if (!guildConfigColumns.includes(col)) {
+        db.exec(`ALTER TABLE guild_config ADD COLUMN ${col} INTEGER DEFAULT 1`);
+        console.log(`✅ [database] '${col}' column added to guild_config`);
+      }
     }
 
     console.log('✅ [database] All missing columns checked and added');

@@ -21,6 +21,9 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
+        // Gate by feature flag
+        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
+        if (!(await ensureFeatureEnabled(interaction, 'jobstats', 'jobstats'))) return;
         await interaction.deferReply(); 
 
         const targetUser = interaction.options.getUser('user') || interaction.user;

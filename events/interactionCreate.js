@@ -1,6 +1,9 @@
 // events/interactionCreate.js
 import { Events, EmbedBuilder } from 'discord.js';
-import { handleTicketWizardComponent, handleEconomyWizardComponent } from '../commands/configuratie/config.js';
+import { handleTicketWizardComponent } from '../commands/configuratie/ticketWizard.js';
+import { handleEconomyWizardComponent } from '../commands/configuratie/economyWizard.js';
+import { handleWelcomeWizardComponent } from '../commands/configuratie/welcomeWizard.js';
+import { handleBirthdayWizardComponent } from '../commands/configuratie/birthdayWizard.js';
 import { handleAIWizardComponent } from '../commands/configuratie/aiwizard.js';
 import { handleWorkSelectMenu, handleWorkCooldownInteraction } from '../commands/economie/work.js';
 import { createTicket, claimTicket, closeTicket } from '../commands/utils/ticketSystem.js';
@@ -96,6 +99,26 @@ export default {
                     await handleAIWizardComponent(interaction);
                 } catch (err) {
                     console.error('❌ AI wizard routing error:', err);
+                }
+                return;
+            }
+
+            // Route Welcome wizard interactions
+            if (interaction.customId && interaction.customId.startsWith('welcome_wizard_')) {
+                try {
+                    await handleWelcomeWizardComponent(interaction);
+                } catch (err) {
+                    console.error('❌ Welcome wizard routing error:', err);
+                }
+                return;
+            }
+
+            // Route Birthday wizard interactions
+            if (interaction.customId && interaction.customId.startsWith('birthday_wizard_')) {
+                try {
+                    await handleBirthdayWizardComponent(interaction);
+                } catch (err) {
+                    console.error('❌ Birthday wizard routing error:', err);
                 }
                 return;
             }

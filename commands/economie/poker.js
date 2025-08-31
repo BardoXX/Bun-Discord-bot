@@ -109,6 +109,8 @@ export default {
     ),
 
   async execute(interaction) {
+    const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
+    if (!(await ensureFeatureEnabled(interaction, 'poker', 'poker'))) return;
     const db = interaction.client.db;
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;

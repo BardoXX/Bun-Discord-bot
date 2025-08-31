@@ -7,6 +7,8 @@ export default {
         .setDescription('Bekijk en koop items uit de shop'),
 
     async execute(interaction) {
+        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
+        if (!(await ensureFeatureEnabled(interaction, 'shop', 'shop'))) return;
         const db = interaction.client.db;
         const guildId = interaction.guild.id;
         const userId = interaction.user.id;

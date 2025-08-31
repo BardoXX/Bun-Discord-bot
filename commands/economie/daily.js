@@ -1,4 +1,5 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { ensureFeatureEnabled } from '../utils/economyFeatures.js';
 
 function toNumber(v, def = 0) {
   try {
@@ -14,6 +15,7 @@ export default {
     .setDescription('Claim je dagelijkse beloning'),
 
   async execute(interaction) {
+    if (!(await ensureFeatureEnabled(interaction, 'daily', 'daily'))) return;
     const db = interaction.client.db;
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;

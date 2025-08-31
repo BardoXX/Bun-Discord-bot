@@ -2,6 +2,7 @@
 import { Client, GatewayIntentBits, Collection, REST, Routes } from 'discord.js';
 import { initializeDatabase, getDb } from 'commands/utils/database.js';
 import BirthdayScheduler from 'commands/utils/birthdayScheduler.js';
+import { BirthdaySystem } from 'commands/utils/birthdaySystem.js';
 import { readdirSync } from 'fs';
 import { join } from 'path';
 import Database from 'bun:sqlite';
@@ -28,6 +29,8 @@ client.db = db;
 console.log('📊 Database initialized with all required tables');
 
 const birthdayScheduler = new BirthdayScheduler(client, db);
+const birthdaySystem = new BirthdaySystem(db);
+client.birthdaySystem = birthdaySystem;
 
 // Load commands from subdirectories
 const commandFolders = readdirSync('./commands');

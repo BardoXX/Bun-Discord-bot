@@ -11,6 +11,8 @@ export default {
         ),
 
     async execute(interaction) {
+        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
+        if (!(await ensureFeatureEnabled(interaction, 'rob', 'rob'))) return;
         try {
             if (!interaction.deferred && !interaction.replied) {
                 await interaction.deferReply();

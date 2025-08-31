@@ -1,5 +1,6 @@
 // commands/economie/balance.js
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { ensureFeatureEnabled } from '../utils/economyFeatures.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -11,6 +12,7 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
+        if (!(await ensureFeatureEnabled(interaction, 'balance', 'balance'))) return;
         const targetUser = interaction.options.getUser('gebruiker') || interaction.user;
         const db = interaction.client.db;
         const userId = targetUser.id;

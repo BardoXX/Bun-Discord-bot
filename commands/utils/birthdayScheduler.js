@@ -101,10 +101,8 @@ class BirthdayScheduler {
             // Get today's birthdays for this guild - FIXED: use correct table name
             const birthdays = safeDbOperation(() => {
                 const birthdayStmt = this.db.prepare(`
-                    SELECT * FROM user_birthdays 
-                    WHERE guild_id = ? AND 
-                    CAST(substr(birth_date, 4, 2) AS INTEGER) = ? AND 
-                    CAST(substr(birth_date, 1, 2) AS INTEGER) = ?
+                    SELECT * FROM birthdays
+                    WHERE guild_id = ? AND month = ? AND day = ?
                 `);
                 return birthdayStmt.all(guildId, month, day);
             });
@@ -152,7 +150,7 @@ class BirthdayScheduler {
                 embed.setDescription(`🎂 **${member.user.tag}** is vandaag jarig${age}!\n\n🎉 Gefeliciteerd!`)
                      .setThumbnail(member.user.displayAvatarURL({ size: 256 }));
             } else {
-                embed.setDescription(`🎂 **<@${birthday.user_id}>** is vandaag jarig${age}!\n\n🎉 Gefeliciteerd!`);
+                embed.setDescription(`🎂 **<@${birthday.user_id}>** is vandaag jarig${age}!\n\n��� Gefeliciteerd!`);
             }
         } else {
             const birthdayList = birthdays.map(birthday => {
@@ -216,10 +214,8 @@ class BirthdayScheduler {
         
         return safeDbOperation(() => {
             const stmt = this.db.prepare(`
-                SELECT * FROM user_birthdays 
-                WHERE guild_id = ? AND 
-                CAST(substr(birth_date, 4, 2) AS INTEGER) = ? AND 
-                CAST(substr(birth_date, 1, 2) AS INTEGER) = ?
+                SELECT * FROM birthdays
+                WHERE guild_id = ? AND month = ? AND day = ?
             `);
             return stmt.all(guildId, month, day);
         });
