@@ -1748,7 +1748,7 @@ export default {
                     option.setName('remove_exempt_role')
                         .setDescription('Verwijder een vrijgestelde rol')
                         .setRequired(false)))
-                .addSubcommand(subcommand =>
+        .addSubcommand(subcommand =>
             subcommand
                 .setName('economy')
                 .setDescription('Open de Economie Wizard')
