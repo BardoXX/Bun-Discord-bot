@@ -18,16 +18,9 @@ async function maybeHandleAIReply(message, db) {
             try {
                 if (v === null || v === undefined) return def;
                 if (typeof v === 'boolean') return v;
-                if (typeof v === 'number') return v !== 0 && !Number.isNaN(v);
-                if (typeof v === 'bigint') return v !== 0n;
-                if (Buffer && Buffer.isBuffer?.(v)) { const s = v.toString('utf8').trim().toLowerCase(); return ['1','true','yes','on'].includes(s); }
-                const s = String(v).trim().toLowerCase();
-                if (s === '') return def;
-                if (['1','true','yes','on','aan'].includes(s)) return true;
-                if (['0','false','no','off','uit'].includes(s)) return false;
-                const n = Number(s);
-                if (!Number.isNaN(n)) return n !== 0;
-                return def;
+                if (typeof v === 'number') return v !== 0;
+                if (typeof v === 'string') return v.toLowerCase() === 'true' || v === '1';
+                return Boolean(v);
             } catch { return def; }
         };
         // Fetch AI config
@@ -35,156 +28,57 @@ async function maybeHandleAIReply(message, db) {
             const stmt = db.prepare(`SELECT ai_enabled, ai_provider, ai_model, ai_system_prompt, ai_temperature, ai_max_tokens, ai_channels, ai_require_mention, ai_cooldown_seconds, ai_channel_prompts, ai_use_guild_secrets, ai_openai_key_enc, ai_openai_base_enc FROM guild_config WHERE guild_id = ?`);
             return stmt.get(message.guild.id);
         });
-        console.debug(`[AI] maybeHandleAIReply enter guild=${message.guild?.id} channel=${message.channel?.id} user=${message.author?.id} content="${String(message.content||'').slice(0,60)}"`);
-        if (!cfg) { console.debug('[AI] skip: no cfg'); return; }
+        
+        if (!cfg) return;
+        
         const isEnabled = normalizeBool(cfg.ai_enabled, false);
-        console.debug(`[AI] ai_enabled raw=${cfg.ai_enabled} type=${typeof cfg.ai_enabled} str=${String(cfg.ai_enabled)}`);
-        if (!isEnabled) { console.debug('[AI] skip: ai_enabled not enabled'); return; }
+        if (!isEnabled) return;
 
-        // Channel allow-list
-        let allowedChannels = [];
-        try { allowedChannels = cfg.ai_channels ? JSON.parse(cfg.ai_channels) : []; } catch {}
-        if (Array.isArray(allowedChannels) && allowedChannels.length > 0) {
-            const allowed = allowedChannels.includes(message.channel.id);
-            console.debug(`[AI] channel allow-list active (${allowedChannels.length}). This channel allowed? ${allowed}`);
-            if (!allowed) return;
-        } else {
-            console.debug('[AI] channel allow-list not set (all channels allowed)');
-        }
-
-        // Simple tool-calling: detect Dutch intent to create a ticket
-        const contentLower = String(message.content || '').toLowerCase();
-        const ticketIntent = /\b(maak|open|start)\b.*\bticket\b/.test(contentLower) || /\bticket\b.*\b(aanmaken|maken|openen|starten)\b/.test(contentLower);
-        if (ticketIntent) {
-            console.debug('[AI] tool-call detected: create ticket');
-            try {
-                const cfgTicket = getTicketConfig(db, message.guild.id) || { thread_mode: 0 };
-                // Try to infer a simple ticket type from message (fallback 'support')
-                let ticketType = 'support';
-                if (/bug|fout|error/.test(contentLower)) ticketType = 'bug-report';
-                else if (/report|meld/.test(contentLower)) ticketType = 'player-report';
-                else if (/unban/.test(contentLower)) ticketType = 'unban';
-                else if (/unmute/.test(contentLower)) ticketType = 'unmute';
-
-                const fakeInteraction = { guild: message.guild, user: message.author, client: message.client };
-                const result = await createTicketChannelOrThread(fakeInteraction, db, cfgTicket, ticketType, null);
-
-                // Save ticket to database so buttons know the owner
-                try {
-                    const insertWithType = db.prepare(`
-                        INSERT INTO tickets (guild_id, user_id, channel_id, status, ticket_type)
-                        VALUES (?, ?, ?, 'open', ?)
-                    `);
-                    insertWithType.run(message.guild.id, message.author.id, result.channel.id, ticketType);
-                } catch (eIns1) {
-                    try {
-                        const insertBasic = db.prepare(`
-                            INSERT INTO tickets (guild_id, user_id, channel_id, status)
-                            VALUES (?, ?, ?, 'open')
-                        `);
-                        insertBasic.run(message.guild.id, message.author.id, result.channel.id);
-                    } catch (eIns2) {
-                        console.error('❌ [AI] failed to persist ticket record:', eIns1?.message || eIns1, eIns2?.message || eIns2);
-                    }
-                }
-
-                const place = result?.isThread ? `thread <#${result.channel.id}>` : `kanaal <#${result.channel.id}>`;
-                await message.reply({ content: `🎫 Ticket aangemaakt in ${place}.`, allowedMentions: { repliedUser: false } });
-                // Cooldown after tool to avoid double fire
-                const key = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
-                aiCooldowns.set(key, Date.now());
-            } catch (e) {
-                console.error('❌ [AI] ticket tool failed:', e);
-                await message.reply({ content: 'Sorry, het aanmaken van een ticket is mislukt. Probeer het opnieuw of gebruik /ticket.', allowedMentions: { repliedUser: false } }).catch(() => {});
-            }
-            return; // Don't proceed to LLM for this intent
-        }
-
-        // Mention requirement
-        const requireMention = normalizeBool(cfg.ai_require_mention, true);
-        let mentioned = false;
-        if (requireMention) {
-            const botId = message.client.user?.id;
-            const isReplyToBot = message.reference?.messageId ? await message.channel.messages.fetch(message.reference.messageId).then(m => m?.author?.id === botId).catch(() => false) : false;
-            mentioned = message.mentions.users.has(botId) || isReplyToBot;
-            console.debug(`[AI] require_mention=true, mentionedOrReply=${mentioned}`);
-            if (!mentioned) return;
-        } else {
-            console.debug('[AI] require_mention=false');
-        }
-
-        // Cooldown per user/channel
-        const cooldownSec = Number(cfg.ai_cooldown_seconds ?? 15);
-        const key = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
-        const now = Date.now();
-        const last = aiCooldowns.get(key) || 0;
-        if (now - last < cooldownSec * 1000) {
-            const remaining = Math.max(0, cooldownSec * 1000 - (now - last));
-            console.debug(`[AI] cooldown active: ${remaining}ms remaining for ${key}`);
+        // Check if AI is enabled for this channel
+        const channelList = (cfg.ai_channels || '').split(',').map(s => s.trim()).filter(Boolean);
+        if (channelList.length > 0 && !channelList.includes(message.channel.id)) {
             return;
         }
 
-        // Prepare messages
-        // Build system prompt, possibly overridden per channel
-        let systemPrompt = (cfg.ai_system_prompt && typeof cfg.ai_system_prompt === 'string')
-            ? cfg.ai_system_prompt
-            : 'Je bent een behulpzame Nederlandse assistent in een Discord server. Antwoord kort, duidelijk en beleefd in het Nederlands.';
-        try {
-            if (cfg.ai_channel_prompts) {
-                const perChannel = JSON.parse(cfg.ai_channel_prompts);
-                const chPrompt = perChannel?.[message.channel.id];
-                if (typeof chPrompt === 'string' && chPrompt.trim()) {
-                    systemPrompt = chPrompt.trim();
-                    console.debug('[AI] using channel-specific system prompt');
-                }
-            }
-        } catch {}
-
-        const chatMessages = [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: message.content?.slice(0, 1500) || '' }
-        ];
-
-        // Typing indicator
-        try { await message.channel.sendTyping(); } catch (e) { console.debug('[AI] sendTyping failed:', e?.message); }
-
-        const provider = (cfg.ai_provider || 'local').toLowerCase();
-        let endpoint, apiKey;
-        if (provider === 'openai') {
-            const useGuild = !!cfg.ai_use_guild_secrets;
-            if (useGuild) {
-                try {
-                    apiKey = cfg.ai_openai_key_enc ? decryptString(cfg.ai_openai_key_enc) : undefined;
-                    endpoint = cfg.ai_openai_base_enc ? decryptString(cfg.ai_openai_base_enc) : undefined;
-                } catch (eDec) {
-                    console.warn('[AI] decrypt guild secrets failed, falling back to env:', eDec?.message);
-                }
-            }
-            endpoint = endpoint || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-            apiKey = apiKey || process.env.OPENAI_API_KEY;
-        } else {
-            endpoint = process.env.LOCAL_OPENAI_URL || process.env.LMSTUDIO_URL || 'http://localhost:1234/v1';
-            apiKey = process.env.LOCAL_OPENAI_API_KEY; // optional
+        // Check if mention is required
+        const requireMention = normalizeBool(cfg.ai_require_mention, true);
+        const isMentioned = message.mentions.has(message.client.user) || 
+                          (message.reference && message.reference.messageId);
+        
+        if (requireMention && !isMentioned) {
+            return;
         }
 
-        console.debug(`[AI] calling generateReply provider=${provider} endpoint=${endpoint} model=${cfg.ai_model || 'default'} temp=${Number(cfg.ai_temperature ?? 0.7)} max=${Number(cfg.ai_max_tokens ?? 256)}`);
+        // Check cooldown
+        const cooldownKey = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
+        const cooldownMs = (cfg.ai_cooldown_seconds || 10) * 1000;
+        const now = Date.now();
+        
+        if (aiCooldowns.has(cooldownKey)) {
+            const lastTime = aiCooldowns.get(cooldownKey);
+            if (now - lastTime < cooldownMs) {
+                return;
+            }
+        }
+        aiCooldowns.set(cooldownKey, now);
+
+        // Process AI response
+        const prompt = message.content.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
+        if (!prompt) return;
+
         const reply = await generateReply({
-            messages: chatMessages,
+            messages: [{ role: 'user', content: prompt }],
             model: cfg.ai_model || undefined,
-            temperature: Number(cfg.ai_temperature ?? 0.7),
-            maxTokens: Number(cfg.ai_max_tokens ?? 256),
-            provider,
-            endpoint,
-            apiKey
+            temperature: cfg.ai_temperature !== undefined ? parseFloat(cfg.ai_temperature) : 0.7,
+            maxTokens: cfg.ai_max_tokens ? parseInt(cfg.ai_max_tokens) : undefined,
+            provider: cfg.ai_provider || 'openai',
+            endpoint: cfg.ai_openai_base_enc ? decryptString(cfg.ai_openai_base_enc) : undefined,
+            apiKey: cfg.ai_openai_key_enc ? decryptString(cfg.ai_openai_key_enc) : undefined
         });
 
-        if (!reply) { console.debug('[AI] generateReply returned null/empty'); return; }
-
-        // Set cooldown only on success
-        aiCooldowns.set(key, now);
-
-        await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
-        console.debug('[AI] reply sent');
+        if (reply) {
+            await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
+        }
     } catch (e) {
         console.error('❌ [AI] Error in maybeHandleAIReply:', e);
     }
@@ -220,6 +114,78 @@ export default {
                 await addXPToUser(message.author.id, message.guild.id, db, config, message);
             }
             
+            // Simple tool-calling: detect Dutch intent to create a ticket
+            const contentLower = String(message.content || '').toLowerCase();
+            const ticketIntent = /\b(maak|open|start)\b.*\bticket\b/.test(contentLower) || /\bticket\b.*\b(aanmaken|maken|openen|starten)\b/.test(contentLower);
+            if (ticketIntent) {
+                try {
+                    const cfgTicket = getTicketConfig(db, message.guild.id) || { thread_mode: 0 };
+                    // Try to infer a simple ticket type from message (fallback 'support')
+                    let ticketType = 'support';
+                    if (/bug|fout|error/.test(contentLower)) ticketType = 'bug-report';
+                    else if (/report|meld/.test(contentLower)) ticketType = 'player-report';
+                    else if (/unban/.test(contentLower)) ticketType = 'unban';
+                    else if (/unmute/.test(contentLower)) ticketType = 'unmute';
+
+                    // Create a proper interaction-like object
+                    const fakeInteraction = {
+                        guild: message.guild,
+                        user: message.author,
+                        member: message.member,
+                        client: message.client,
+                        channel: message.channel,
+                        reply: async (options) => {
+                            return message.channel.send(options);
+                        },
+                        // Add required properties for interaction
+                        isCommand: () => false,
+                        isButton: () => false,
+                        isModalSubmit: () => false,
+                        isContextMenu: () => false,
+                        isSelectMenu: () => false,
+                        isAutocomplete: () => false,
+                        isMessageComponent: () => false,
+                        isRepliable: () => false,
+                        inGuild: () => true,
+                        inCachedGuild: () => true,
+                        inRawGuild: () => true,
+                        inGuildCache: () => true
+                    };
+                    
+                    const result = await createTicketChannelOrThread(fakeInteraction, db, cfgTicket, ticketType, null);
+
+                    // Save ticket to database so buttons know the owner
+                    try {
+                        const insertWithType = db.prepare(`
+                            INSERT INTO tickets (guild_id, user_id, channel_id, status, ticket_type)
+                            VALUES (?, ?, ?, 'open', ?)
+                        `);
+                        insertWithType.run(message.guild.id, message.author.id, result.channel.id, ticketType);
+                    } catch (eIns1) {
+                        try {
+                            const insertBasic = db.prepare(`
+                                INSERT INTO tickets (guild_id, user_id, channel_id, status)
+                                VALUES (?, ?, ?, 'open')
+                            `);
+                            insertBasic.run(message.guild.id, message.author.id, result.channel.id);
+                        } catch (eIns2) {
+                            console.error('❌ [AI] failed to persist ticket record:', eIns1?.message || eIns1, eIns2?.message || eIns2);
+                        }
+                    }
+
+                    const place = result?.isThread ? `thread <#${result.channel.id}>` : `kanaal <#${result.channel.id}>`;
+                    await message.channel.send(`🎫 Ticket aangemaakt in ${place}.`);
+                    
+                    // Cooldown after tool to avoid double fire
+                    const key = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
+                    aiCooldowns.set(key, Date.now());
+                    return; // Exit after handling ticket creation
+                } catch (e) {
+                    console.error('❌ [AI] ticket tool failed:', e);
+                    await message.channel.send('Sorry, het aanmaken van een ticket is mislukt. Probeer het opnieuw of gebruik /ticket.').catch(() => {});
+                    return; // Exit after error
+                }
+            }
             // AI auto-responder (basic)
             await maybeHandleAIReply(message, db);
             

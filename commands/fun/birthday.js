@@ -192,7 +192,11 @@ async function handleListBirthdays(interaction, guildId) {
         if (!grouped[monthName]) {
           grouped[monthName] = [];
         }
-        grouped[monthName].push(bd);
+        grouped[monthName].push({
+          ...bd,
+          day: Number(bd.day),    // Convert day to Number
+          month: Number(bd.month) // Convert month to Number
+        });
       });
 
       let description = '';

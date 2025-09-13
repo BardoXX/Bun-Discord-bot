@@ -40,10 +40,17 @@ for (const folder of commandFolders) {
     
     for (const file of commandFiles) {
         try {
+            console.log(`🔍 Loading command: ${folder}/${file}`);
             const command = await import(`./commands/${folder}/${file}`);
             if (command.default?.data?.name) {
                 client.commands.set(command.default.data.name, command.default);
                 console.log(`✅ Loaded command: ${command.default.data.name} from ${folder}`);
+            } else if (command.data?.name) {
+                // Handle direct exports (without default)
+                client.commands.set(command.data.name, command);
+                console.log(`✅ Loaded command (direct): ${command.data.name} from ${folder}`);
+            } else {
+                console.warn(`⚠️ Skipping ${file}: No valid command data found`);
             }
         } catch (error) {
             console.error(`❌ Failed to load command ${file}:`, error);
@@ -96,7 +103,34 @@ if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
 }
 
 // Deploy commands on startup
-client.once('ready', () => {
+client.once('ready', async () => {
+    console.log(`🤖 ${client.user.tag} is online!`);
+    
+    // Create necessary tables if they don't exist
+    try {
+        await client.db.exec(`
+            CREATE TABLE IF NOT EXISTS ticket_systems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                category_id TEXT NOT NULL,
+                log_channel_id TEXT,
+                thread_mode BOOLEAN NOT NULL DEFAULT 0,
+                required_role_id TEXT,
+                naming_format TEXT NOT NULL DEFAULT 'ticket-{type}-{user}',
+                types TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id)
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_ticket_systems_guild_id ON ticket_systems(guild_id);
+        `);
+        console.log('✅ Ticket systems table initialized');
+    } catch (error) {
+        console.error('❌ Failed to initialize ticket systems table:', error);
+    }
+    
     console.log(`🤖 Bot is ready! Logged in as ${client.user.tag}`);
     deployCommands();
     birthdayScheduler.start();

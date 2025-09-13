@@ -60,6 +60,14 @@ async function createTicketChannel(interaction, db, config, ticketType, formData
             ],
         };
 
+        // Add required role to the ticket channel permissions
+        if (config.required_role_id) {
+            baseOptions.permissionOverwrites.push({
+                id: config.required_role_id,
+                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+            });
+        }
+
         // Try with parent first (if valid), then without as fallback
         let channel;
         try {
@@ -78,7 +86,19 @@ async function createTicketChannel(interaction, db, config, ticketType, formData
 
         // Send initial ticket message
         await sendTicketInitialMessage(channel, interaction.user, ticketType, formData);
-        
+
+        // Send success message
+        const successEmbed = new EmbedBuilder()
+            .setColor(0x00ff00)
+            .setTitle('✅ Ticket Aangemaakt')
+            .setDescription(`Je ${ticketType} ticket is aangemaakt in ${channel}`)
+            .setTimestamp();
+
+        await interaction.editReply({ 
+            embeds: [successEmbed],
+            ephemeral: true 
+        });
+
         return { channel, isThread: false };
     } catch (error) {
         throw new Error(`Failed to create ticket channel: ${error.message}`);
@@ -124,12 +144,33 @@ async function createTicketThread(interaction, db, config, ticketType, formData)
             invitable: false
         });
         
+        // Add required role to the thread permissions
+        if (config.required_role_id) {
+            await thread.permissionOverwrites.create(config.required_role_id, {
+                ViewChannel: true,
+                SendMessages: true,
+                ReadMessageHistory: true
+            });
+        }
+
         // Add the user to the thread
         await thread.members.add(interaction.user.id);
         
         // Send initial ticket message
         await sendTicketInitialMessage(thread, interaction.user, ticketType, formData);
-        
+
+        // Send success message
+        const successEmbed = new EmbedBuilder()
+            .setColor(0x00ff00)
+            .setTitle('✅ Ticket Aangemaakt')
+            .setDescription(`Je ${ticketType} ticket is aangemaakt in ${thread}`)
+            .setTimestamp();
+
+        await interaction.editReply({ 
+            embeds: [successEmbed],
+            ephemeral: true 
+        });
+
         return { channel: thread, isThread: true };
     } catch (error) {
         throw new Error(`Failed to create ticket thread: ${error.message}`);

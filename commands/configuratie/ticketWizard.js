@@ -1,443 +1,852 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType } from 'discord.js';
 import { ackUpdate } from '../../modules/utils/ack.js';
+import { getTicketSystemsByGuild } from '../../modules/tickets/ticketUtils.js';
+import { get, run } from '../utils/database.js';
+import { handleInteractionReply } from '../../modules/utils/interactionUtils.js';
+
+// Wizard steps
+const STEPS = {
+    WELCOME: 0,
+    CHANNELS: 1,
+    TICKET_TYPES: 2,
+    ADVANCED: 3,
+    REVIEW: 4
+};
 
 const ticketWizardState = new Map();
 
 function getWizardKey(interaction) {
-  return `${interaction.guild.id}:${interaction.user.id}`;
+    return `${interaction.guild.id}:${interaction.user.id}`;
 }
 
-function buildWizardEmbed(state) {
-  const channelVal = state?.channelId ? `<#${state.channelId}>` : 'Niet gekozen';
-  const categoryVal = state?.categoryId ? `<#${state.categoryId}>` : 'Niet gekozen';
-  const logVal = state?.logChannelId ? `<#${state.logChannelId}>` : 'Niet gekozen';
-  const typesVal = (state?.types?.length ?? 0) > 0 ? `${state.types.length} gekozen` : 'Geen gekozen';
-  const customVal = (state?.customButtons?.length ?? 0) > 0 ? `${state.customButtons.length} custom` : 'Geen custom';
-  const overwriteVal = state?.overwrite ? 'Ja' : 'Nee';
-  const threadVal = state?.thread_mode ? 'Thread' : 'Kanaal';
-  return new EmbedBuilder()
-    .setColor('#0099ff')
-    .setTitle('🎛️ Ticket Wizard')
-    .setDescription('Kies de opties hieronder en klik op "Paneel aanmaken" om het ticketpaneel te plaatsen.')
-    .addFields(
-      { name: 'Plaatsingskanaal', value: channelVal, inline: true },
-      { name: 'Categorie', value: categoryVal, inline: true },
-      { name: 'Log kanaal', value: logVal, inline: true },
-      { name: 'Ticket types', value: typesVal, inline: true },
-      { name: 'Custom knoppen', value: customVal, inline: true },
-      { name: 'Overschrijven', value: overwriteVal, inline: true },
-      { name: 'Ticket modus', value: threadVal, inline: true },
-    )
-    .setTimestamp();
+function buildWelcomeEmbed() {
+    return new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle('🎫 Ticket Setup Wizard')
+        .setDescription('Welcome to the ticket system setup! This wizard will guide you through the process of setting up your ticket system.')
+        .addFields(
+            { name: 'What\'s included', value: '• Custom ticket types\n• Role management\n• Thread/Channel support\n• Logging options' },
+            { name: 'Quick Start', value: 'Use the buttons below to get started. You can always go back to change your settings.' }
+        );
 }
 
-function buildWizardComponents(state) {
-  const row1 = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder().setCustomId('ticket_wizard_channel').setPlaceholder('Kies kanaal voor panelen').addChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
-  );
-  const rowCat = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder().setCustomId('ticket_wizard_category').setPlaceholder('Kies categorie voor tickets').addChannelTypes(ChannelType.GuildCategory).setMinValues(1).setMaxValues(1)
-  );
-  const rowLog = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder().setCustomId('ticket_wizard_log').setPlaceholder('Kies log kanaal (optioneel)').addChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
-  );
-  const typeChoices = [
-    { label: 'Algemene Hulp', value: 'support', emoji: '🆘' },
-    { label: 'Account Probleem', value: 'account', emoji: '👤' },
-    { label: 'Speler Report', value: 'player-report', emoji: '🚨' },
-    { label: 'Bug Report', value: 'bug-report', emoji: '🐞' },
-    { label: 'Unban Aanvraag', value: 'unban', emoji: '📝' },
-    { label: 'Unmute Aanvraag', value: 'unmute', emoji: '🔈' },
-  ];
-  const rowTypes = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder().setCustomId('ticket_wizard_types').setPlaceholder('Kies ticket types (1-5)').setMinValues(1).setMaxValues(5).addOptions(typeChoices.map(t => ({ label: t.label, value: t.value, emoji: t.emoji })))
-  );
-  const rowBtns = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ticket_wizard_toggle_overwrite').setLabel(state?.overwrite ? 'Overwrite: Aan' : 'Overwrite: Uit').setStyle(state?.overwrite ? ButtonStyle.Danger : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_wizard_toggle_thread').setLabel(state?.thread_mode ? 'Modus: Thread' : 'Modus: Kanaal').setStyle(state?.thread_mode ? ButtonStyle.Primary : ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_wizard_create_panel').setLabel('Paneel aanmaken').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('ticket_wizard_add_custom').setLabel('➕ Custom knop toevoegen').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_wizard_manage').setLabel('🛠️ Beheer panelen').setStyle(ButtonStyle.Secondary)
-  );
-  return [row1, rowCat, rowLog, rowTypes, rowBtns];
+function buildStepEmbed(step, state) {
+    const embeds = [];
+    const mainEmbed = new EmbedBuilder()
+        .setColor('#5865F2')
+        .setTitle(`🎫 Ticket Setup (${step + 1}/4)`)
+        .setDescription('Configure your ticket system settings.');
+
+    switch (step) {
+        case STEPS.CHANNELS:
+            mainEmbed
+                .addFields(
+                    { name: '🔄 Channel Setup', value: 'Select where you want the ticket panel to appear and where tickets should be created.' },
+                    { name: 'Panel Channel', value: state.channelId ? `<#${state.channelId}>` : '❌ Not selected', inline: true },
+                    { name: 'Ticket Category', value: state.categoryId ? `<#${state.categoryId}>` : '❌ Not selected', inline: true },
+                    { name: 'Log Channel', value: state.logChannelId ? `<#${state.logChannelId}>` : '❌ Not selected', inline: true }
+                );
+            break;
+            
+        case STEPS.TICKET_TYPES:
+            const ticketTypes = state.types?.length > 0 
+                ? state.types.map((t, i) => `${i + 1}. ${t.emoji} ${t.label} (${t.value})`).join('\n')
+                : 'No ticket types added yet.';
+            
+            mainEmbed
+                .addFields(
+                    { name: '🎫 Ticket Types', value: 'Add and configure different types of tickets.' },
+                    { name: 'Current Types', value: ticketTypes }
+                );
+            break;
+            
+        case STEPS.ADVANCED:
+            mainEmbed
+                .addFields(
+                    { name: '⚙️ Advanced Settings', value: 'Configure additional options for your ticket system.' },
+                    { name: 'Ticket Mode', value: state.thread_mode ? 'Thread' : 'Channel', inline: true },
+                    { name: 'Required Role', value: state.requiredRoleId ? `<@&${state.requiredRoleId}>` : 'None', inline: true },
+                    { name: 'Naming Format', value: state.namingFormat || 'ticket-{type}-{user}', inline: true }
+                );
+            break;
+            
+        case STEPS.REVIEW:
+            mainEmbed
+                .setTitle('✅ Review & Create')
+                .setDescription('Please review your settings before creating the ticket system.')
+                .addFields(
+                    { name: 'Panel Channel', value: `<#${state.channelId}>`, inline: true },
+                    { name: 'Ticket Category', value: `<#${state.categoryId}>`, inline: true },
+                    { name: 'Log Channel', value: state.logChannelId ? `<#${state.logChannelId}>` : '❌ Not set', inline: true },
+                    { name: 'Ticket Types', value: `${state.types?.length || 0} types configured`, inline: true },
+                    { name: 'Ticket Mode', value: state.thread_mode ? 'Thread' : 'Channel', inline: true },
+                    { name: 'Required Role', value: state.requiredRoleId ? `<@&${state.requiredRoleId}>` : 'None', inline: true }
+                );
+            break;
+    }
+    
+    embeds.push(mainEmbed);
+    return embeds;
 }
 
-export async function handleTicketWizard(interaction, db) {
-  const key = getWizardKey(interaction);
-  const state = ticketWizardState.get(key) || { channelId: null, categoryId: null, logChannelId: null, types: [], customButtons: [], thread_mode: false, overwrite: false };
-  const embed = buildWizardEmbed(state);
-  const components = buildWizardComponents(state);
-  await interaction.editReply({ embeds: [embed], components });
+function buildWelcomeComponents() {
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('ticket_wizard_start')
+            .setLabel('Start Setup')
+            .setStyle(ButtonStyle.Primary)
+    );
+    return [row];
+}
+
+function buildStepComponents(step, state) {
+    const components = [];
+    
+    // Navigation row (back/next/confirm)
+    const navRow = new ActionRowBuilder();
+    
+    if (step > STEPS.WELCOME) {
+        navRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId('ticket_wizard_prev')
+                .setLabel('Back')
+                .setStyle(ButtonStyle.Secondary)
+        );
+    }
+    
+    if (step < STEPS.REVIEW) {
+        navRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId('ticket_wizard_next')
+                .setLabel(step === STEPS.REVIEW - 1 ? 'Review & Create' : 'Next')
+                .setStyle(step === STEPS.REVIEW - 1 ? ButtonStyle.Success : ButtonStyle.Primary)
+        );
+    } else {
+        navRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId('ticket_wizard_confirm')
+                .setLabel('Create Ticket System')
+                .setStyle(ButtonStyle.Success)
+        );
+    }
+    
+    components.push(navRow);
+    
+    // Step-specific components
+    switch (step) {
+        case STEPS.CHANNELS:
+            const channelRow = new ActionRowBuilder().addComponents(
+                new ChannelSelectMenuBuilder()
+                    .setCustomId('ticket_wizard_select_channel')
+                    .setChannelTypes([ChannelType.GuildText])
+                    .setPlaceholder('Select a channel for the ticket panel')
+                    .setMaxValues(1)
+            );
+            
+            const categoryRow = new ActionRowBuilder().addComponents(
+                new ChannelSelectMenuBuilder()
+                    .setCustomId('ticket_wizard_select_category')
+                    .setChannelTypes([ChannelType.GuildCategory])
+                    .setPlaceholder('Select a category for ticket channels')
+                    .setMaxValues(1)
+            );
+            
+            const logRow = new ActionRowBuilder().addComponents(
+                new ChannelSelectMenuBuilder()
+                    .setCustomId('ticket_wizard_log_channel')
+                    .setChannelTypes([ChannelType.GuildText])
+                    .setPlaceholder('Select a log channel (optional)')
+                    .setMaxValues(1)
+            );
+            
+            components.push(channelRow, categoryRow, logRow);
+            break;
+            
+        case STEPS.TICKET_TYPES:
+            const addTypeRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_add_type')
+                    .setLabel('Add Ticket Type')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('➕')
+            );
+            
+            components.push(addTypeRow);
+            
+            if (state.types && state.types.length > 0) {
+                const typesRow = new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId('ticket_wizard_remove_type')
+                        .setPlaceholder('Click to remove a ticket type')
+                        .setMinValues(1)
+                        .setMaxValues(1)
+                        .addOptions(
+                            state.types.map(type => ({
+                                label: type.label,
+                                value: type.value,
+                                emoji: type.emoji || '🎟️',
+                                description: type.description || 'No description'
+                            }))
+                        )
+                );
+                components.push(typesRow);
+            }
+            break;
+            
+        case STEPS.ADVANCED:
+            const modeRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_toggle_mode')
+                    .setLabel(`Mode: ${state.thread_mode ? 'Thread' : 'Channel'}`)
+                    .setStyle(ButtonStyle.Secondary)
+            );
+            
+            const roleFormatRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_advanced_set_role')
+                    .setLabel('Set Required Role')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('👥'),
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_advanced_set_format')
+                    .setLabel('Set Naming Format')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('🏷️')
+            );
+            
+            components.push(modeRow, roleFormatRow);
+            break;
+            
+        case STEPS.REVIEW:
+            const reviewActionsRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_review_set_role')
+                    .setLabel('Set Required Role')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('👥'),
+                new ButtonBuilder()
+                    .setCustomId('ticket_wizard_review_set_format')
+                    .setLabel('Set Naming Format')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('🏷️')
+            );
+            
+            components.push(reviewActionsRow);
+            break;
+    }
+    
+    return components;
+}
+
+export async function handleTicketWizard(interaction) {
+    const key = getWizardKey(interaction);
+    const state = {
+        step: STEPS.WELCOME,
+        channelId: null,
+        categoryId: null,
+        logChannelId: null,
+        types: [],
+        thread_mode: false,
+        requiredRoleId: null,
+        namingFormat: 'ticket-{type}-{user}'
+    };
+    
+    ticketWizardState.set(key, state);
+    
+    const embed = buildWelcomeEmbed();
+    const components = buildWelcomeComponents();
+    
+    const reply = async (options) => {
+        try {
+            if (interaction.deferred || interaction.replied) {
+                return await interaction.followUp(options);
+            } else {
+                return await interaction.reply(options);
+            }
+        } catch (error) {
+            console.error('Error sending reply:', error);
+        }
+    };
+
+    // Check if the interaction has already been replied to
+    if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({ 
+            embeds: [embed],
+            components,
+            ephemeral: true 
+        });
+    } else {
+        await reply({ 
+            embeds: [embed],
+            components,
+            ephemeral: true 
+        });
+    }
+}
+
+export async function editTicketSetup(interaction) {
+    try {
+        // Get all ticket systems for this guild
+        const db = interaction.client.db;
+        const ticketSystems = await db.all(
+            'SELECT * FROM ticket_systems WHERE guild_id = ?',
+            [interaction.guild.id]
+        );
+
+        if (ticketSystems.length === 0) {
+            return await handleInteractionReply(interaction, {
+                content: '❌ No ticket systems found to edit. Please create one first using `/ticket setup`.',
+                ephemeral: true
+            });
+        }
+
+        // Create a select menu with existing ticket systems
+        const selectRow = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('select_ticket_system')
+                .setPlaceholder('Select a ticket system to edit')
+                .addOptions(
+                    ticketSystems.map(sys => ({
+                        label: `Ticket System #${sys.id}`,
+                        description: `Panel in: ${sys.channel_id ? `<#${sys.channel_id}>` : 'Not set'}`,
+                        value: sys.id.toString()
+                    }))
+                )
+        );
+
+        await handleInteractionReply(interaction, {
+            content: 'Select the ticket system you want to edit:',
+            components: [selectRow],
+            ephemeral: true
+        });
+    } catch (error) {
+        console.error('Error in editTicketSetup:', error);
+        await handleInteractionReply(interaction, {
+            content: '❌ An error occurred while trying to edit the ticket system.',
+            ephemeral: true
+        });
+    }
 }
 
 export async function handleTicketWizardComponent(interaction) {
-  const db = interaction.client.db;
-  const key = `${interaction.guild.id}:${interaction.user.id}`;
-  const state = ticketWizardState.get(key) || { channelId: null, overwrite: false };
-
-  try {
-    if (interaction.customId === 'ticket_wizard_channel' && (interaction.isAnySelectMenu?.() || interaction.isChannelSelectMenu?.())) {
-      state.channelId = interaction.values?.[0] || null;
-      ticketWizardState.set(key, state);
-      await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-      return;
-    }
-    if (interaction.customId === 'ticket_wizard_category' && (interaction.isAnySelectMenu?.() || interaction.isChannelSelectMenu?.())) {
-      state.categoryId = interaction.values?.[0] || null;
-      ticketWizardState.set(key, state);
-      await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-      return;
-    }
-    if (interaction.customId === 'ticket_wizard_log' && (interaction.isAnySelectMenu?.() || interaction.isChannelSelectMenu?.())) {
-      state.logChannelId = interaction.values?.[0] || null;
-      ticketWizardState.set(key, state);
-      await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-      return;
-    }
-    if (interaction.customId === 'ticket_wizard_types' && interaction.isStringSelectMenu?.()) {
-      state.types = interaction.values || [];
-      ticketWizardState.set(key, state);
-      await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'ticket_wizard_add_custom') {
-      const modal = new ModalBuilder().setCustomId('ticket_wizard_add_custom_modal').setTitle('Custom Ticketknop');
-      const label = new TextInputBuilder().setCustomId('label').setLabel('Knop label').setRequired(true).setStyle(TextInputStyle.Short).setMaxLength(40);
-      const type = new TextInputBuilder().setCustomId('ticket_type').setLabel('Ticket type (uniek id, bijv. custom-1)').setRequired(true).setStyle(TextInputStyle.Short).setMaxLength(32);
-      const style = new TextInputBuilder().setCustomId('style').setLabel('Stijl: PRIMARY | SECONDARY | SUCCESS | DANGER').setRequired(true).setStyle(TextInputStyle.Short).setMaxLength(10);
-      const options = new TextInputBuilder().setCustomId('options').setLabel('Opties: THREAD|CHANNEL, FORM:YES|NO').setRequired(false).setStyle(TextInputStyle.Short).setMaxLength(40);
-      const formJson = new TextInputBuilder().setCustomId('form_json').setLabel('Form JSON (optioneel)').setRequired(false).setStyle(TextInputStyle.Paragraph).setMaxLength(1000);
-      modal.addComponents(new ActionRowBuilder().addComponents(label), new ActionRowBuilder().addComponents(type), new ActionRowBuilder().addComponents(style), new ActionRowBuilder().addComponents(options), new ActionRowBuilder().addComponents(formJson));
-      await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.isButton()) {
-      const id = interaction.customId;
-      if (id === 'ticket_wizard_back') {
-        const stBack = ticketWizardState.get(key) || {};
-        delete stBack.managePanelId;
-        delete stBack.manageButtonId;
-        ticketWizardState.set(key, stBack);
-        await ackUpdate(interaction, { embeds: [buildWizardEmbed(stBack)], components: buildWizardComponents(stBack) });
+    const key = getWizardKey(interaction);
+    const state = ticketWizardState.get(key) || { step: STEPS.WELCOME };
+    
+    if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isChannelSelectMenu()) {
         return;
-      }
-      if (id === 'ticket_wizard_toggle_overwrite') {
-        state.overwrite = !state.overwrite;
-        ticketWizardState.set(key, state);
-        await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-        return;
-      }
-      if (id === 'ticket_wizard_toggle_thread') {
-        state.thread_mode = !state.thread_mode;
-        ticketWizardState.set(key, state);
-        await ackUpdate(interaction, { embeds: [buildWizardEmbed(state)], components: buildWizardComponents(state) });
-        return;
-      }
-
-      if (id === 'ticket_wizard_create_panel') {
-        if (!state.channelId) {
-          await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('❌ Kanaal vereist').setDescription('Kies eerst een plaatsingskanaal via de select menu.').setTimestamp()] });
-          return;
-        }
-        if (!state.types || state.types.length < 1) {
-          await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff9900').setTitle('⚠️ Kies ticket types').setDescription('Selecteer ten minste 1 ticket type in de wizard.').setTimestamp()] });
-          return;
-        }
-        await interaction.deferReply({ ephemeral: true });
-        const guildId = interaction.guild.id;
-        const ensureRow = db.prepare('INSERT OR IGNORE INTO guild_config (guild_id) VALUES (?)');
-        ensureRow.run(guildId);
-        const updates = [];
-        const vals = [];
-        if (state.categoryId) { updates.push('ticket_category = ?'); vals.push(state.categoryId); }
-        if (state.logChannelId) { updates.push('ticket_log_channel = ?'); vals.push(state.logChannelId); }
-        if (updates.length) { db.prepare(`UPDATE guild_config SET ${updates.join(', ')} WHERE guild_id = ?`).run(...vals, guildId); }
-
-        const TYPE_DEF = {
-          'support': { label: 'Algemene Hulp', style: 'PRIMARY', emoji: '🆘' },
-          'account': { label: 'Account Probleem', style: 'SECONDARY', emoji: '👤' },
-          'player-report': { label: 'Speler Report', style: 'DANGER', emoji: '🚨' },
-          'bug-report': { label: 'Bug Report', style: 'SECONDARY', emoji: '🐞' },
-          'unban': { label: 'Unban Aanvraag', style: 'SUCCESS', emoji: '📝' },
-          'unmute': { label: 'Unmute Aanvraag', style: 'SUCCESS', emoji: '🔈' },
-        };
-
-        const { createTicketPanel, postTicketPanel, getTicketPanelsForGuild, deleteTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-        const { addPanelButton, setTicketConfig } = await import('../../modules/tickets/ticketConfig.js');
-        const { clearButtonCache, clearPanelCache } = await import('../../modules/tickets/ticketButtonHandler.js');
-
-        if (state.overwrite) {
-          const existing = getTicketPanelsForGuild(db, guildId);
-          for (const p of existing) deleteTicketPanel(db, p.id);
-          clearPanelCache();
-        }
-
-        try {
-          setTicketConfig(db, guildId, { ticket_category_id: state.categoryId || null, thread_mode: !!state.thread_mode, log_channel_id: state.logChannelId || null });
-        } catch {}
-
-        const panel = await createTicketPanel(db, guildId, 'Tickets', state.channelId, { title: '🎫 Tickets', description: 'Kies het type ticket dat je wilt openen.', color: '#2f3136' });
-
-        const builtButtons = [];
-        for (const cb of (state.customButtons || [])) {
-          const safeStyle = ['PRIMARY','SECONDARY','SUCCESS','DANGER'].includes(cb.style) ? cb.style : 'SECONDARY';
-          builtButtons.push({ label: cb.label, style: safeStyle, emoji: cb.emoji, ticket_type: cb.ticket_type, thread_mode: cb.thread_mode, use_form: !!cb.use_form, form_fields: cb.form_fields });
-        }
-        for (const t of (state.types || [])) {
-          const def = TYPE_DEF[t];
-          if (!def) continue;
-          builtButtons.push({ label: def.label, style: def.style, emoji: def.emoji, ticket_type: t });
-        }
-        for (const btn of builtButtons.slice(0, 5)) {
-          addPanelButton(db, panel.id, {
-            label: btn.label,
-            style: btn.style,
-            emoji: btn.emoji,
-            ticket_type: btn.ticket_type,
-            use_form: !!btn.use_form,
-            form_fields: btn.use_form ? JSON.stringify(btn.form_fields || []) : ((btn.thread_mode === true || btn.thread_mode === false) ? { thread_mode: btn.thread_mode } : null),
-            role_requirement: null,
-          });
-        }
-        clearButtonCache();
-        const message = await postTicketPanel(db, interaction.client, panel.id);
-
-        const success = new EmbedBuilder().setColor('#00ff00').setTitle('✅ Paneel aangemaakt').setDescription(`Paneel geplaatst in <#${state.channelId}>`).addFields(
-          { name: 'Categorie', value: state.categoryId ? `<#${state.categoryId}>` : 'Niet gekozen', inline: true },
-          { name: 'Log kanaal', value: state.logChannelId ? `<#${state.logChannelId}>` : 'Niet gekozen', inline: true },
-          { name: 'Modus', value: state.thread_mode ? 'Thread' : 'Kanaal', inline: true },
-          { name: 'Buttons', value: String((state.types?.length || 0) + (state.customButtons?.length || 0)), inline: true },
-          { name: 'Bericht', value: `[Openen](${message.url})`, inline: false },
-        ).setTimestamp();
-        await interaction.editReply({ embeds: [success] });
-        return;
-      }
-
-      if (id === 'ticket_wizard_manage') {
-        const { getTicketPanelsForGuild } = await import('../../modules/tickets/ticketPanelManager.js');
-        const panels = getTicketPanelsForGuild(db, interaction.guild.id);
-        const options = panels.slice(0, 25).map(p => ({ label: `${p.panel_name} (#${p.id})`, value: String(p.id), description: p.embed_title?.slice(0, 90) || ' ' }));
-        const embed = new EmbedBuilder().setColor('#5865f2').setTitle('🛠️ Beheer Ticketpanelen').setDescription('Selecteer een paneel om te beheren:').setTimestamp();
-        const rowSel = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('ticket_manage_select_panel').setPlaceholder(options.length ? 'Kies een paneel' : 'Geen panelen gevonden').setMinValues(1).setMaxValues(1).addOptions(options.length ? options : [{ label: 'Geen panelen', value: 'none', description: 'Maak eerst een paneel aan' }]));
-        const rowBack = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_wizard_back').setLabel('Terug').setStyle(ButtonStyle.Secondary));
-        await ackUpdate(interaction, { embeds: [embed], components: [rowSel, rowBack] });
-        return;
-      }
     }
-
-    if (interaction.isModalSubmit?.() && interaction.customId === 'ticket_wizard_add_custom_modal') {
-      const key2 = `${interaction.guild.id}:${interaction.user.id}`;
-      const st = ticketWizardState.get(key2) || { channelId: null, categoryId: null, logChannelId: null, types: [], customButtons: [], thread_mode: false, overwrite: false };
-      const label = interaction.fields.getTextInputValue('label')?.trim();
-      const ticket_type = interaction.fields.getTextInputValue('ticket_type')?.trim().toLowerCase();
-      const styleInputRaw = interaction.fields.getTextInputValue('style')?.trim();
-      const styleInput = styleInputRaw ? styleInputRaw.toUpperCase() : '';
-      const allowed = ['PRIMARY','SECONDARY','SUCCESS','DANGER'];
-      const style = styleInput ? (allowed.includes(styleInput) ? styleInput : 'SECONDARY') : 'SECONDARY';
-      const optionsRaw = interaction.fields.getTextInputValue('options')?.trim().toUpperCase() || '';
-      const optParts = optionsRaw.split(',').map(s => s.trim()).filter(Boolean);
-      let thread_mode = undefined;
-      let use_form = false;
-      for (const p of optParts) { if (p === 'THREAD') thread_mode = true; else if (p === 'CHANNEL') thread_mode = false; else if (p === 'FORM:YES') use_form = true; else if (p === 'FORM:NO') use_form = false; }
-      let form_fields = undefined;
-      const formJsonText = interaction.fields.getTextInputValue('form_json')?.trim();
-      if (use_form) {
-        if (!formJsonText) { await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('❌ Formulier ontbreekt').setDescription('Je hebt FORM:YES gezet, maar geen Form JSON opgegeven.').setTimestamp()] }); return; }
-        try {
-          const parsed = JSON.parse(formJsonText);
-          if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 5) throw new Error('Form JSON moet een array van 1-5 velden zijn');
-          for (const f of parsed) {
-            if (typeof f.label !== 'string' || f.label.length < 1 || f.label.length > 45) throw new Error('Elk veld moet een label (<=45) hebben');
-            if (f.style && !['short','paragraph'].includes(String(f.style).toLowerCase())) throw new Error('style moet short of paragraph zijn');
-            if (f.min_length && isNaN(Number(f.min_length))) throw new Error('min_length moet een nummer zijn');
-            if (f.max_length && isNaN(Number(f.max_length))) throw new Error('max_length moet een nummer zijn');
-          }
-          form_fields = parsed;
-        } catch (e) {
-          await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('❌ Ongeldige Form JSON').setDescription(String(e.message || e)).setTimestamp()] });
-          return;
-        }
-      }
-      if (!label || !ticket_type) {
-        await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('❌ Ongeldige invoer').setDescription('Label en ticket type zijn vereist.').setTimestamp()] });
-        return;
-      }
-      const arr = Array.isArray(st.customButtons) ? st.customButtons : [];
-      const idx = arr.findIndex(b => b.ticket_type === ticket_type);
-      const newBtn = { label, style, ticket_type, thread_mode, use_form, form_fields };
-      if (idx >= 0) arr[idx] = newBtn; else arr.push(newBtn);
-      st.customButtons = arr;
-      ticketWizardState.set(key2, st);
-      await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#00cc66').setTitle('✅ Custom knop toegevoegd').setDescription(`Toegevoegd: ${label} (${style})${thread_mode !== undefined ? ` • Modus: ${thread_mode ? 'THREAD' : 'CHANNEL'}` : ''}${use_form ? ' • Formulier: AAN' : ''}`).setTimestamp()] });
-      return;
-    }
-
-    // Management flows (edit embed/buttons, refresh)
-    if (interaction.isStringSelectMenu?.() && interaction.customId === 'ticket_manage_select_panel') {
-      const sel = interaction.values?.[0];
-      if (!sel || sel === 'none') { await ackUpdate(interaction, { components: [] }); return; }
-      const panelId = Number(sel);
-      const st = ticketWizardState.get(key) || {};
-      st.managePanelId = panelId;
-      ticketWizardState.set(key, st);
-      const { getTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      const { getButtonsForPanel } = await import('../../modules/tickets/ticketConfig.js');
-      const panel = getTicketPanel(db, panelId);
-      const buttons = getButtonsForPanel(db, panelId);
-      const btnOptions = buttons.slice(0, 25).map(b => ({ label: `${b.label} [${b.style}]`, value: String(b.id), description: `${b.ticket_type}${b.use_form ? ' • FORM' : ''}`.slice(0, 90) }));
-      const embed = new EmbedBuilder().setColor('#5865f2').setTitle(`Beheer: ${panel.panel_name} (#${panel.id})`).setDescription(`Kanaal: <#${panel.channel_id}>
-Titel: ${panel.embed_title || '—'}
-Omschrijving: ${(panel.embed_description || '—').slice(0, 200)}`).setTimestamp();
-      const rowActions = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('ticket_manage_edit_embed').setLabel('Wijzig embed').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('ticket_manage_refresh_panel').setLabel('Refresh paneel').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('ticket_wizard_back').setLabel('Terug').setStyle(ButtonStyle.Secondary)
-      );
-      const rowBtnSel = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('ticket_manage_select_button').setPlaceholder(btnOptions.length ? 'Kies knop om te bewerken' : 'Geen knoppen').setMinValues(1).setMaxValues(1).addOptions(btnOptions.length ? btnOptions : [{ label: 'Geen knoppen', value: 'none' }]));
-      await interaction.deferUpdate();
-      await interaction.editReply({ embeds: [embed], components: [rowActions, rowBtnSel] });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'ticket_manage_edit_embed') {
-      const st = ticketWizardState.get(key) || {};
-      if (!st.managePanelId) { await interaction.reply({ ephemeral: true, content: 'Geen paneel geselecteerd.' }); return; }
-      const { getTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      const p = getTicketPanel(db, st.managePanelId);
-      const modal = new ModalBuilder().setCustomId('ticket_manage_edit_embed_modal').setTitle('Wijzig paneel embed');
-      const ti = new TextInputBuilder().setCustomId('title').setLabel('Titel').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100).setValue(p.embed_title || '');
-      const de = new TextInputBuilder().setCustomId('description').setLabel('Omschrijving').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setValue(p.embed_description || '');
-      const co = new TextInputBuilder().setCustomId('color').setLabel('Kleur (hex, bijv. #2f3136)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(7).setValue(p.embed_color || '');
-      modal.addComponents(new ActionRowBuilder().addComponents(ti), new ActionRowBuilder().addComponents(de), new ActionRowBuilder().addComponents(co));
-      await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.isModalSubmit?.() && interaction.customId === 'ticket_manage_edit_embed_modal') {
-      const st = ticketWizardState.get(key) || {};
-      const title = interaction.fields.getTextInputValue('title')?.trim();
-      const description = interaction.fields.getTextInputValue('description')?.trim();
-      const color = interaction.fields.getTextInputValue('color')?.trim();
-      if (color && !/^#?[0-9A-Fa-f]{6}$/.test(color)) {
-        await interaction.deferReply({ ephemeral: true });
-        await interaction.editReply({ content: 'Ongeldige kleur. Gebruik bijv. #2f3136' });
-        return;
-      }
-      const { updateTicketPanel, updateOrPostTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      const updates2 = {};
-      if (title !== undefined) updates2.embed_title = title || null;
-      if (description !== undefined) updates2.embed_description = description || null;
-      if (color !== undefined) updates2.embed_color = (color?.startsWith('#') ? color : (`#${color}`));
-      updateTicketPanel(db, st.managePanelId, updates2);
-      try { await updateOrPostTicketPanel(db, interaction.client, st.managePanelId); } catch {}
-      await interaction.deferReply({ ephemeral: true });
-      await interaction.editReply({ content: '✅ Paneel bijgewerkt.' });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'ticket_manage_refresh_panel') {
-      const st = ticketWizardState.get(key) || {};
-      if (!st.managePanelId) { await interaction.deferReply({ ephemeral: true }); await interaction.editReply({ content: 'Geen paneel geselecteerd.' }); return; }
-      const { updateOrPostTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      try { await updateOrPostTicketPanel(db, interaction.client, st.managePanelId); } catch (e) { console.error(e); }
-      await interaction.deferReply({ ephemeral: true });
-      await interaction.editReply({ content: '🔄 Bericht ververst.' });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu?.() && interaction.customId === 'ticket_manage_select_button') {
-      const st = ticketWizardState.get(key) || {};
-      const val = interaction.values?.[0];
-      if (!st.managePanelId || !val || val === 'none') { await interaction.deferUpdate(); await interaction.editReply({}); return; }
-      st.manageButtonId = Number(val);
-      ticketWizardState.set(key, st);
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('ticket_manage_edit_button').setLabel('Bewerk knop').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId('ticket_manage_delete_button').setLabel('Verwijder knop').setStyle(ButtonStyle.Danger)
-      );
-      await interaction.deferUpdate();
-      await interaction.editReply({ components: [row] });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'ticket_manage_edit_button') {
-      const { getButton } = await import('../../modules/tickets/ticketConfig.js');
-      const st = ticketWizardState.get(key) || {};
-      if (!st.manageButtonId) { await interaction.reply({ ephemeral: true, content: 'Geen knop geselecteerd.' }); return; }
-      const b = getButton(db, st.manageButtonId);
-      if (!b) { await interaction.reply({ ephemeral: true, content: 'Knop niet gevonden.' }); return; }
-      const modal = new ModalBuilder().setCustomId('ticket_manage_edit_button_modal').setTitle('Bewerk knop');
-      const label = new TextInputBuilder().setCustomId('label').setLabel('Label').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40).setValue(b.label || '');
-      const style = new TextInputBuilder().setCustomId('style').setLabel('Stijl (PRIMARY/SECONDARY/SUCCESS/DANGER)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10).setValue((b.style || 'SECONDARY'));
-      const type = new TextInputBuilder().setCustomId('ticket_type').setLabel('Ticket type').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(32).setValue(b.ticket_type || '');
-      const options = new TextInputBuilder().setCustomId('options').setLabel('Opties: THREAD|CHANNEL, FORM:YES|NO').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(40);
-      const fieldsRaw = (() => { try { return b.form_fields ? JSON.stringify(JSON.parse(b.form_fields), null, 0) : ''; } catch { return typeof b.form_fields === 'string' ? b.form_fields : ''; } })();
-      const formJson = new TextInputBuilder().setCustomId('form_json').setLabel('Form JSON (optioneel)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1000).setValue(fieldsRaw || '');
-      modal.addComponents(new ActionRowBuilder().addComponents(label), new ActionRowBuilder().addComponents(type), new ActionRowBuilder().addComponents(style), new ActionRowBuilder().addComponents(options), new ActionRowBuilder().addComponents(formJson));
-      await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.isModalSubmit?.() && interaction.customId === 'ticket_manage_edit_button_modal') {
-      const { getButton, updatePanelButton } = await import('../../modules/tickets/ticketConfig.js');
-      const st = ticketWizardState.get(key) || {};
-      if (!st.managePanelId || !st.manageButtonId) { await interaction.deferReply({ ephemeral: true }); await interaction.editReply({ content: 'Geen selectie.' }); return; }
-      const existing = getButton(db, st.manageButtonId) || {};
-      const label = interaction.fields.getTextInputValue('label')?.trim();
-      const ticket_type = interaction.fields.getTextInputValue('ticket_type')?.trim().toLowerCase();
-      const styleInput = interaction.fields.getTextInputValue('style')?.trim().toUpperCase();
-      const allowed = ['PRIMARY','SECONDARY','SUCCESS','DANGER'];
-      const style = allowed.includes(styleInput) ? styleInput : 'SECONDARY';
-      const optionsRaw = interaction.fields.getTextInputValue('options')?.trim().toUpperCase() || '';
-      const optParts = optionsRaw.split(',').map(s => s.trim()).filter(Boolean);
-      let thread_mode = undefined;
-      let use_form = undefined;
-      for (const p of optParts) { if (p === 'THREAD') thread_mode = true; else if (p === 'CHANNEL') thread_mode = false; else if (p === 'FORM:YES') use_form = true; else if (p === 'FORM:NO') use_form = false; }
-      const finalUseForm = (use_form !== undefined ? use_form : !!existing.use_form);
-      const parseExistingFields = () => { try { if (existing.form_fields === null || existing.form_fields === undefined) return null; if (typeof existing.form_fields === 'string') return JSON.parse(existing.form_fields); return existing.form_fields; } catch { return null; } };
-      let form_fields = undefined;
-      const formJsonText = interaction.fields.getTextInputValue('form_json')?.trim();
-      if (finalUseForm === true) {
-        if (formJsonText) {
-          try {
-            const parsed = JSON.parse(formJsonText);
-            if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 5) throw new Error('Form JSON moet 1-5 velden bevatten');
-            form_fields = parsed;
-          } catch (e) { await interaction.deferReply({ ephemeral: true }); await interaction.editReply({ content: `Ongeldige Form JSON: ${e.message || e}` }); return; }
-        } else { const ex = parseExistingFields(); form_fields = Array.isArray(ex) ? ex : []; }
-      } else {
-        if (thread_mode !== undefined) form_fields = { thread_mode }; else { const ex = parseExistingFields(); form_fields = ex && !Array.isArray(ex) ? ex : null; }
-      }
-      const finalTicketType = ticket_type || existing.ticket_type || '';
-      const updates = { label, style, ticket_type: finalTicketType, use_form: finalUseForm };
-      if (form_fields !== undefined) updates.form_fields = form_fields;
-      updatePanelButton(db, st.manageButtonId, updates);
-      const { updateOrPostTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      try { await updateOrPostTicketPanel(db, interaction.client, st.managePanelId); } catch {}
-      await interaction.deferReply({ ephemeral: true });
-      await interaction.editReply({ content: '✅ Knop bijgewerkt.' });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'ticket_manage_delete_button') {
-      const { removePanelButton } = await import('../../modules/tickets/ticketConfig.js');
-      const st = ticketWizardState.get(key) || {};
-      if (!st.managePanelId || !st.manageButtonId) { await interaction.deferReply({ ephemeral: true }); await interaction.editReply({ content: 'Geen knop geselecteerd.' }); return; }
-      removePanelButton(db, st.manageButtonId);
-      const { updateOrPostTicketPanel } = await import('../../modules/tickets/ticketPanelManager.js');
-      try { await updateOrPostTicketPanel(db, interaction.client, st.managePanelId); } catch {}
-      await interaction.deferReply({ ephemeral: true });
-      await interaction.editReply({ content: '🗑️ Knop verwijderd.' });
-      return;
-    }
-  } catch (error) {
-    console.error('Ticket wizard component error:', error);
+    
     try {
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('❌ Wizard Fout').setDescription('Er ging iets mis bij het verwerken van je actie.').setTimestamp()] });
-      }
-    } catch {}
-  }
+        // Handle navigation
+        if (interaction.customId === 'ticket_wizard_start') {
+            state.step = STEPS.CHANNELS;
+        } 
+        else if (interaction.customId === 'ticket_wizard_next') {
+            if (state.step === STEPS.ADVANCED) {
+                // Move to review step first
+                state.step = STEPS.REVIEW;
+                ticketWizardState.set(key, state);
+                
+                // Show the review step
+                const updatePromise = interaction.update({
+                    embeds: buildStepEmbed(state.step, state),
+                    components: buildStepComponents(state.step, state)
+                });
+                
+                // After showing the review step, handle the confirmation
+                updatePromise.then(() => {
+                    // Use a small delay to ensure the update is complete
+                    setTimeout(() => {
+                        handleTicketWizardConfirm(interaction, state).catch(error => {
+                            console.error('Error in auto-confirmation:', error);
+                        });
+                    }, 500);
+                });
+                
+                return;
+            }
+            state.step++;
+        }
+        else if (interaction.customId === 'ticket_wizard_prev') {
+            if (state.step > STEPS.WELCOME) {
+                state.step--;
+                ticketWizardState.set(key, state);
+                
+                const embeds = buildStepEmbed(state.step, state);
+                const components = buildStepComponents(state.step, state);
+                await interaction.update({ embeds, components });
+            } else {
+                await interaction.deferUpdate();
+            }
+            return;
+        }
+        
+        // Handle confirmation
+        else if (interaction.customId === 'ticket_wizard_confirm') {
+            if (!state.channelId || !state.categoryId) {
+                if (!interaction.replied && !interaction.deferred) {
+                    await handleInteractionReply(interaction, { 
+                        content: '❌ Please complete all required fields first.', 
+                        ephemeral: true 
+                    });
+                } else {
+                    await handleInteractionReply(interaction, { 
+                        content: '❌ Please complete all required fields first.', 
+                        ephemeral: true 
+                    });
+                }
+                return;
+            }
+
+            // Defer the interaction if not already done
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.deferUpdate();
+            }
+            
+            try {
+                // Auto-confirm if we're in a DM (for testing)
+                if (!interaction.guild) {
+                    // For DMs, use a different state key and skip guild-specific checks
+                    const dmKey = `dm:${interaction.user.id}`;
+                    const dmState = ticketWizardState.get(dmKey) || { ...state };
+                    
+                    // Set some default values for testing
+                    dmState.guildId = 'test';
+                    dmState.channelId = dmState.channelId || 'test-channel';
+                    dmState.categoryId = dmState.categoryId || 'test-category';
+                    
+                    // Update the state and proceed with confirmation
+                    ticketWizardState.set(dmKey, dmState);
+                    await handleTicketWizardConfirm(interaction, dmState);
+                    return;
+                } else {
+                    // For guild interactions, proceed normally
+                    state.guildId = interaction.guild.id;
+                    state.channelId = interaction.channelId;
+                    
+                    // Check if a ticket system already exists for this guild
+                    const existingSystem = await get(
+                        'SELECT id FROM ticket_systems WHERE guild_id = ?', 
+                        [state.guildId]
+                    );
+                    
+                    if (existingSystem) {
+                        // Update existing system instead of creating a new one
+                        await run(
+                            'UPDATE ticket_systems SET channel_id = ?, category_id = ?, log_channel_id = ?, thread_mode = ?, required_role_id = ?, naming_format = ?, types = ? WHERE guild_id = ?',
+                            [
+                                state.channelId, 
+                                state.categoryId, 
+                                state.logChannelId, 
+                                state.thread_mode ? 1 : 0, 
+                                state.requiredRoleId, 
+                                state.namingFormat, 
+                                JSON.stringify(state.types || []), 
+                                state.guildId
+                            ]
+                        );
+                        
+                        await handleInteractionReply(interaction, {
+                            content: '✅ Successfully updated ticket system!',
+                            ephemeral: true
+                        });
+                    } else {
+                        // Create new ticket system
+                        await run(
+                            'INSERT INTO ticket_systems (guild_id, channel_id, category_id, log_channel_id, thread_mode, required_role_id, naming_format, types) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                            [
+                                state.guildId, 
+                                state.channelId, 
+                                state.categoryId, 
+                                state.logChannelId, 
+                                state.thread_mode ? 1 : 0, 
+                                state.requiredRoleId, 
+                                state.namingFormat, 
+                                JSON.stringify(state.types || [])
+                            ]
+                        );
+                        
+                        await handleInteractionReply(interaction, {
+                            content: '✅ Successfully created ticket system!',
+                            ephemeral: true
+                        });
+                    }
+                    
+                    // Clean up the state
+                    ticketWizardState.delete(key);
+                }
+            } catch (error) {
+                console.error('Error saving ticket system:', error);
+                await interaction.update({
+                    content: '❌ An error occurred while saving the ticket system.',
+                    components: []
+                });
+            }
+            return;
+        }
+        
+        // Handle channel selections
+        else if (interaction.isChannelSelectMenu()) {
+            const value = interaction.values?.[0];
+            if (interaction.customId === 'ticket_wizard_select_channel') state.channelId = value;
+            else if (interaction.customId === 'ticket_wizard_select_category') state.categoryId = value;
+            else if (interaction.customId === 'ticket_wizard_log_channel') state.logChannelId = value;
+        }
+        
+        // Handle ticket type management
+        else if (interaction.customId === 'ticket_wizard_add_type') {
+            // Show modal to add new ticket type
+            const modal = new ModalBuilder()
+                .setCustomId('ticket_type_modal')
+                .setTitle('Add Ticket Type');
+                
+            const typeName = new TextInputBuilder()
+                .setCustomId('type_name')
+                .setLabel('Ticket Type Name')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setPlaceholder('e.g., Support, Report, Application');
+                
+            const typeEmoji = new TextInputBuilder()
+                .setCustomId('type_emoji')
+                .setLabel('Emoji (optional)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setPlaceholder('e.g., 🆘, ❓, 📝');
+                
+            const typeDescription = new TextInputBuilder()
+                .setCustomId('type_description')
+                .setLabel('Description (optional)')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)
+                .setPlaceholder('A brief description of this ticket type');
+                
+            const firstActionRow = new ActionRowBuilder().addComponents(typeName);
+            const secondActionRow = new ActionRowBuilder().addComponents(typeEmoji);
+            const thirdActionRow = new ActionRowBuilder().addComponents(typeDescription);
+            
+            modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+            await interaction.showModal(modal);
+            return;
+        }
+        
+        // Toggle thread mode
+        else if (interaction.customId === 'ticket_wizard_toggle_mode') {
+            state.thread_mode = !state.thread_mode;
+            ticketWizardState.set(key, state);
+            
+            const embeds = buildStepEmbed(state.step, state);
+            const components = buildStepComponents(state.step, state);
+            await interaction.update({ embeds, components });
+            return;
+        }
+        
+        // Handle setting naming format
+        else if (interaction.customId === 'ticket_wizard_advanced_set_format' || interaction.customId === 'ticket_wizard_review_set_format') {
+            // Show a modal for the naming format
+            const modal = new ModalBuilder()
+                .setCustomId('ticket_naming_modal')
+                .setTitle('Ticket Naming Format');
+                
+            const formatInput = new TextInputBuilder()
+                .setCustomId('naming_format')
+                .setLabel('Format (use {type} and {user} as placeholders)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setValue(state.namingFormat || 'ticket-{type}-{user}')
+                .setPlaceholder('Example: ticket-{type}-{user}');
+                
+            const firstActionRow = new ActionRowBuilder().addComponents(formatInput);
+            modal.addComponents(firstActionRow);
+            
+            await interaction.showModal(modal);
+            return;
+        }
+        
+        // Handle setting required role
+        else if (interaction.customId === 'ticket_wizard_advanced_set_role' || interaction.customId === 'ticket_wizard_review_set_role') {
+            // Show a modal for the required role
+            const modal = new ModalBuilder()
+                .setCustomId('ticket_role_modal')
+                .setTitle('Required Role');
+                
+            const roleInput = new TextInputBuilder()
+                .setCustomId('required_role')
+                .setLabel('Role ID (leave empty to disable)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setValue(state.requiredRoleId || '')
+                .setPlaceholder('Example: 1234567890');
+                
+            const firstActionRow = new ActionRowBuilder().addComponents(roleInput);
+            modal.addComponents(firstActionRow);
+            
+            await interaction.showModal(modal);
+            return;
+        }
+        
+        // Handle select ticket system
+        else if (interaction.customId === 'select_ticket_system') {
+            if (interaction.isStringSelectMenu()) {
+                const ticketId = interaction.values[0];
+                try {
+                    const ticketSystem = await get(
+                        'SELECT * FROM ticket_systems WHERE id = ?', 
+                        [ticketId]
+                    );
+
+                    if (!ticketSystem) {
+                        return interaction.update({
+                            content: '❌ Ticket system not found.',
+                            components: []
+                        });
+                    }
+
+                    // Parse the existing configuration
+                    const state = {
+                        guildId: interaction.guild.id,
+                        channelId: ticketSystem.channel_id,
+                        categoryId: ticketSystem.category_id,
+                        logChannelId: ticketSystem.log_channel_id,
+                        thread_mode: ticketSystem.thread_mode,
+                        requiredRoleId: ticketSystem.required_role_id,
+                        namingFormat: ticketSystem.naming_format,
+                        types: JSON.parse(ticketSystem.types || '[]'),
+                        step: STEPS.CHANNELS,
+                        isEditing: true,
+                        editId: ticketSystem.id
+                    };
+
+                    const key = getWizardKey(interaction);
+                    ticketWizardState.set(key, state);
+
+                    await interaction.update({
+                        content: 'Editing ticket system:',
+                        embeds: buildStepEmbed(state.step, state),
+                        components: buildStepComponents(state.step, state)
+                    });
+                } catch (error) {
+                    console.error('Error loading ticket system:', error);
+                    await interaction.update({
+                        content: '❌ Failed to load ticket system. Please try again.',
+                        components: []
+                    });
+                }
+            }
+        }
+        
+        // Save state and update message
+        ticketWizardState.set(key, state);
+        
+        // Only update if we haven't shown a modal
+        if (!interaction.isModalSubmit()) {
+            const embeds = state.step === STEPS.WELCOME 
+                ? [buildWelcomeEmbed()] 
+                : buildStepEmbed(state.step, state);
+                
+            const components = state.step === STEPS.WELCOME
+                ? buildWelcomeComponents()
+                : buildStepComponents(state.step, state);
+            
+            if (interaction.replied || interaction.deferred) {
+                await interaction.editReply({ embeds, components });
+            } else {
+                await interaction.update({ embeds, components });
+            }
+        }
+        
+    } catch (error) {
+        console.error('Error in ticket wizard:', error);
+        
+        // Only send error if we haven't already replied
+        if (!interaction.replied && !interaction.deferred) {
+            await handleInteractionReply(interaction, { 
+                content: 'An error occurred while processing your request.', 
+                ephemeral: true 
+            });
+        } else {
+            try {
+                await handleInteractionReply(interaction, { 
+                    content: 'An error occurred while processing your request.', 
+                    ephemeral: true 
+                });
+            } catch (e) {
+                console.error('Failed to send error follow-up:', e);
+            }
+        }
+    }
+}
+
+export async function handleTicketWizardConfirm(interaction, state) {
+    const interactionToUse = interaction.deferred || interaction.replied ? 
+        interaction.followUp.bind(interaction) : 
+        interaction.reply.bind(interaction);
+    
+    try {
+        // For DMs, use test values
+        if (!interaction.guild) {
+            const dmKey = `dm:${interaction.user.id}`;
+            const dmState = ticketWizardState.get(dmKey) || { ...state };
+            
+            // Set test values
+            dmState.guildId = 'test';
+            dmState.channelId = dmState.channelId || 'test-channel';
+            dmState.categoryId = dmState.categoryId || 'test-category';
+            
+            await handleInteractionReply(interaction, {
+                content: '✅ Test configuration saved! (DM mode)',
+                ephemeral: true
+            });
+            
+            ticketWizardState.delete(dmKey);
+            return;
+        }
+        
+        // For guild interactions
+        state.guildId = interaction.guild.id;
+        
+        // Get database connection
+        const db = getDb();
+        if (!db) {
+            throw new Error('Database connection not available');
+        }
+        
+        // Check if a ticket system already exists for this guild
+        const existingSystem = await get(
+            'SELECT id FROM ticket_systems WHERE guild_id = ?', 
+            [state.guildId]
+        );
+        
+        if (existingSystem) {
+            // Update existing system
+            await run(
+                'UPDATE ticket_systems SET channel_id = ?, category_id = ?, log_channel_id = ?, thread_mode = ?, required_role_id = ?, naming_format = ?, types = ? WHERE guild_id = ?',
+                [
+                    state.channelId, 
+                    state.categoryId, 
+                    state.logChannelId, 
+                    state.thread_mode ? 1 : 0, 
+                    state.requiredRoleId, 
+                    state.namingFormat, 
+                    JSON.stringify(state.types || []), 
+                    state.guildId
+                ]
+            );
+            
+            await handleInteractionReply(interaction, {
+                content: '✅ Successfully updated ticket system!',
+                ephemeral: true
+            });
+        } else {
+            // Create new ticket system
+            await run(
+                'INSERT INTO ticket_systems (guild_id, channel_id, category_id, log_channel_id, thread_mode, required_role_id, naming_format, types) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [
+                    state.guildId, 
+                    state.channelId, 
+                    state.categoryId, 
+                    state.logChannelId, 
+                    state.thread_mode ? 1 : 0, 
+                    state.requiredRoleId, 
+                    state.namingFormat, 
+                    JSON.stringify(state.types || [])
+                ]
+            );
+            
+            await handleInteractionReply(interaction, {
+                content: '✅ Successfully created ticket system!',
+                ephemeral: true
+            });
+        }
+        
+        // Clean up the state
+        ticketWizardState.delete(getWizardKey(interaction));
+        
+    } catch (error) {
+        console.error('Error in handleTicketWizardConfirm:', error);
+        
+        // Try to send an error message, but don't fail if we can't
+        try {
+            await handleInteractionReply(interaction, {
+                content: '❌ An error occurred while saving the ticket system. Please try again.',
+                ephemeral: true
+            });
+        } catch (e) {
+            console.error('Could not send error message:', e);
+        }
+    }
+}
+
+// Handle modal submissions
+export async function handleTicketWizardModal(interaction) {
+    if (!interaction.isModalSubmit()) return;
+    
+    const key = getWizardKey(interaction);
+    const state = ticketWizardState.get(key);
+    
+    if (!state) {
+        await handleInteractionReply(interaction, { 
+            content: 'Your ticket wizard session has expired. Please start over.', 
+            ephemeral: true 
+        });
+        return;
+    }
+    
+    try {
+        // Handle ticket type modal
+        if (interaction.customId === 'ticket_type_modal') {
+            const typeName = interaction.fields.getTextInputValue('type_name');
+            const typeEmoji = interaction.fields.getTextInputValue('type_emoji') || '🎫';
+            const typeDescription = interaction.fields.getTextInputValue('type_description') || '';
+            
+            if (!state.types) state.types = [];
+            state.types.push({
+                label: typeName,
+                value: typeName.toLowerCase().replace(/\s+/g, '-'),
+                emoji: typeEmoji,
+                description: typeDescription
+            });
+            
+            ticketWizardState.set(key, state);
+            
+            await interaction.deferUpdate();
+            const embeds = buildStepEmbed(state.step, state);
+            const components = buildStepComponents(state.step, state);
+            await interaction.editReply({ embeds, components });
+        }
+        // Handle naming format modal
+        else if (interaction.customId === 'ticket_naming_modal') {
+            const format = interaction.fields.getTextInputValue('naming_format');
+            state.namingFormat = format || 'ticket-{type}-{user}';
+            ticketWizardState.set(key, state);
+            
+            await interaction.deferUpdate();
+            const embeds = buildStepEmbed(state.step, state);
+            const components = buildStepComponents(state.step, state);
+            await interaction.editReply({ embeds, components });
+        }
+        // Handle required role modal
+        else if (interaction.customId === 'ticket_role_modal') {
+            const roleId = interaction.fields.getTextInputValue('required_role');
+            state.requiredRoleId = roleId || null;
+            ticketWizardState.set(key, state);
+            
+            await interaction.deferUpdate();
+            const embeds = buildStepEmbed(state.step, state);
+            const components = buildStepComponents(state.step, state);
+            await interaction.editReply({ embeds, components });
+        }
+    } catch (error) {
+        console.error('Error in ticket wizard modal:', error);
+        
+        // Try to send an error message, but don't crash if it fails
+        try {
+            await handleInteractionReply(interaction, { 
+                content: '❌ An error occurred while processing your input.', 
+                ephemeral: true 
+            });
+        } catch (e) {
+            console.error('Failed to send error message:', e);
+        }
+    }
 }

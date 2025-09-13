@@ -1,19 +1,27 @@
 import Database from 'bun:sqlite';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 let db;
 
+/**
+ * Get the database instance
+ * @returns {Database} The database instance
+ */
 export function getDb() {
-  if (!db) throw new Error('Database is not initialized – call initializeDatabase() first');
-  return db;
+    if (!db) throw new Error('Database is not initialized - call initializeDatabase() first');
+    return db;
 }
 
+/**
+ * Initialize the database
+ */
 export function initializeDatabase() {
     try {
-        const dbPath = join(__dirname, 'bot.db')
+        const dbPath = join(__dirname, 'bot.db');
         
         db = new Database(dbPath, { 
             create: true,
@@ -21,13 +29,13 @@ export function initializeDatabase() {
             readonly: false
         });
         
-        // Performance-instellingen
+        // Performance settings
         db.exec("PRAGMA journal_mode = WAL;");
-        db.exec("PRAGMA synchronous = NORMAL;"); 
+        db.exec("PRAGMA synchronous = NORMAL;");
         db.exec("PRAGMA temp_store = MEMORY;");
-        db.exec("PRAGMA cache_size = -64000;"); 
+        db.exec("PRAGMA cache_size = -64000;");
         db.exec("PRAGMA mmap_size = 300000000;");
-        db.exec("PRAGMA foreign_keys = ON;"); 
+        db.exec("PRAGMA foreign_keys = ON;");
         db.exec("PRAGMA busy_timeout = 5000;");
         
         console.log('📊 [database] Database opened with optimized settings');
@@ -40,6 +48,47 @@ export function initializeDatabase() {
         console.error('❌ [database] Failed to initialize database:', error);
         process.exit(1);
     }
+}
+
+/**
+ * Execute a SQL query and return the result
+ * @param {string} sql - The SQL query to execute
+ * @param {Array} params - The parameters for the query
+ * @returns {Promise<{lastID: number, changes: number}>}
+ */
+export function run(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        try {
+            const stmt = db.prepare(sql);
+            const result = stmt.run(...params);
+            resolve({
+                lastID: result.lastInsertRowid,
+                changes: result.changes
+            });
+        } catch (error) {
+            console.error('Database run error:', error);
+            reject(error);
+        }
+    });
+}
+
+/**
+ * Get a single row from the database
+ * @param {string} sql - The SQL query to execute
+ * @param {Array} params - The parameters for the query
+ * @returns {Promise<Object|null>}
+ */
+export function get(sql, params = []) {
+    return new Promise((resolve, reject) => {
+        try {
+            const stmt = db.prepare(sql);
+            const row = stmt.get(...params);
+            resolve(row || null);
+        } catch (error) {
+            console.error('Database get error:', error);
+            reject(error);
+        }
+    });
 }
 
 function createTables() {
@@ -97,12 +146,15 @@ function createTables() {
       ai_provider TEXT,
       ai_model TEXT,
       ai_system_prompt TEXT,
-      ai_temperature REAL DEFAULT 0.7,
-      ai_max_tokens INTEGER DEFAULT 256,
+      ai_temperature REAL,
+      ai_max_tokens INTEGER,
       ai_channels TEXT,
       ai_require_mention INTEGER DEFAULT 1,
-      ai_cooldown_seconds INTEGER DEFAULT 15,
+      ai_cooldown_seconds INTEGER DEFAULT 10,
       ai_channel_prompts TEXT,
+      ai_use_guild_secrets INTEGER DEFAULT 0,
+      ai_openai_key_enc TEXT,
+      ai_openai_base_enc TEXT,
       -- Slot machine defaults
       slot_enabled INTEGER DEFAULT 0,
       slot_min_bet INTEGER DEFAULT 10,
@@ -333,13 +385,13 @@ function createTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_panels (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT NOT NULL,
-      panel_name TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      embed_title TEXT DEFAULT '🎫 Ticket Systeem',
-      embed_description TEXT DEFAULT 'Klik op een knop hieronder om een ticket aan te maken.',
-      embed_color TEXT DEFAULT '#0099ff',
-      FOREIGN KEY (guild_id) REFERENCES guild_config(guild_id) ON DELETE CASCADE
+      guild_id TEXT,
+      panel_name TEXT,
+      channel_id TEXT,
+      message_id TEXT,
+      embed_title TEXT,
+      embed_description TEXT,
+      embed_color TEXT
     )
   `);
 
@@ -347,15 +399,15 @@ function createTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_buttons (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      panel_id INTEGER NOT NULL,
-      label TEXT NOT NULL,
-      style TEXT DEFAULT 'PRIMARY',
+      panel_id INTEGER,
+      label TEXT,
+      style TEXT,
       emoji TEXT,
-      ticket_type TEXT NOT NULL,
+      ticket_type TEXT,
       use_form INTEGER DEFAULT 0,
       form_fields TEXT,
       role_requirement TEXT,
-      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id) ON DELETE CASCADE
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id)
     )
   `);
 
@@ -772,6 +824,20 @@ function addMissingColumns() {
       console.log("✅ [database] 'ai_channel_prompts' column added to guild_config");
     }
 
+    // Check and add missing AI-related columns to guild_config
+    const columnsToAdd = [
+      { name: 'ai_use_guild_secrets', type: 'INTEGER DEFAULT 0' },
+      { name: 'ai_openai_key_enc', type: 'TEXT' },
+      { name: 'ai_openai_base_enc', type: 'TEXT' }
+    ];
+
+    for (const column of columnsToAdd) {
+      if (!guildConfigColumns.includes(column.name)) {
+        console.log(`[Database] Adding missing column ${column.name} to guild_config`);
+        db.prepare(`ALTER TABLE guild_config ADD COLUMN ${column.name} ${column.type}`).run();
+      }
+    }
+
     // Ticket config settings
     const ticketConfigColumns = db.prepare(`PRAGMA table_info(ticket_config)`).all().map(c => c.name);
     if (!ticketConfigColumns.includes('ticket_channel_id')) {
@@ -797,32 +863,41 @@ function addMissingColumns() {
 }
 
 export function safeTransaction(callback) {
-    const db = getDb(); 
-    db.exec('BEGIN');
-    try {
-        const result = callback(db);
-        db.exec('COMMIT');
-        return result;
-    } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
-    }
+  const db = getDb(); 
+  db.exec('BEGIN');
+  try {
+    const result = callback(db);
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 export function safeDbOperation(operation, maxRetries = 3) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            return operation();
-        } catch (error) {
-            if (error.code === 'SQLITE_BUSY' && attempt < maxRetries) {
-                console.warn(`⚠️ [database] Retry ${attempt}/${maxRetries} due to BUSY`);
-                const delay = Math.min(100 * Math.pow(2, attempt - 1), 1000);
-                Bun.sleepSync(delay);
-                continue;
-            }
-            throw error;
-        }
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return operation();
+    } catch (error) {
+      if (error.code === 'SQLITE_BUSY' && attempt < maxRetries) {
+        console.warn(`⚠️ [database] Retry ${attempt}/${maxRetries} due to BUSY`);
+        const delay = Math.min(100 * Math.pow(2, attempt - 1), 1000);
+        Bun.sleepSync(delay);
+        continue;
+      }
+      throw error;
     }
+  }
 }
 
-export default db;
+export default {
+  getDb,
+  initializeDatabase,
+  run,
+  get,
+  createTables,
+  addMissingColumns,
+  safeTransaction,
+  safeDbOperation
+};

@@ -80,7 +80,7 @@ export class BirthdaySystem {
             'januari', 'februari', 'maart', 'april', 'mei', 'juni',
             'juli', 'augustus', 'september', 'oktober', 'november', 'december'
         ];
-        return monthNames[month - 1];
+        return monthNames[Number(month) - 1];
     }
 
     createBirthdayEmbed(user, day, month) {
