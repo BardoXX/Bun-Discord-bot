@@ -150,7 +150,29 @@ class BirthdayScheduler {
                 embed.setDescription(`🎂 **${member.user.tag}** is vandaag jarig${age}!\n\n🎉 Gefeliciteerd!`)
                      .setThumbnail(member.user.displayAvatarURL({ size: 256 }));
             } else {
-                embed.setDescription(`🎂 **<@${birthday.user_id}>** is vandaag jarig${age}!\n\n��� Gefeliciteerd!`);
+                embed.setDescription(`🎂 **<@${birthday.user_id}>** is vandaag jarig${age}!\n\n🎉 Gefeliciteerd!`);
+            }
+
+            // Add who set the birthday and when if available
+            if (birthday.set_by) {
+                const setByMember = guild.members.cache.get(birthday.set_by);
+                const setByText = setByMember ? setByMember.user.tag : `(ID: ${birthday.set_by})`;
+                
+                let footerText = `Ingesteld door: ${setByText}`;
+                
+                if (birthday.set_at) {
+                    const formattedDate = new Date(birthday.set_at).toLocaleDateString('nl-NL', {
+                        day: '2-digit',
+                        month: 'long',
+                        year: 'numeric'
+                    });
+                    footerText += ` • ${formattedDate}`;
+                }
+                
+                embed.setFooter({ 
+                    text: `${guild.name} • ${footerText}`, 
+                    iconURL: guild.iconURL() 
+                });
             }
         } else {
             const birthdayList = birthdays.map(birthday => {
@@ -168,6 +190,16 @@ class BirthdayScheduler {
             }).join('\n');
 
             embed.setDescription(`${birthdayList}\n\n🎉 Allemaal gefeliciteerd met jullie verjaardag!`);
+
+            // Add a note that some birthdays might have been set by other users
+            const hasSetByInfo = birthdays.some(b => b.set_by);
+            if (hasSetByInfo) {
+                embed.addFields({
+                    name: 'ℹ️ Info',
+                    value: 'Sommige verjaardagen zijn mogelijk ingesteld door andere gebruikers. Gebruik `/birthday view @gebruiker` voor meer details.',
+                    inline: false
+                });
+            }
         }
 
         // Add some birthday emojis and styling

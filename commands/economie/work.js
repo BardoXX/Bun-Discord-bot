@@ -234,9 +234,9 @@ export default {
 
             const finalEarnings = Math.floor(baseEarnings * totalMultiplier);
 
-            // Update balance and last_work time
+            // Update balance and last_work time with proper type handling
             stmt = db.prepare('UPDATE users SET balance = balance + ?, last_work = ? WHERE user_id = ? AND guild_id = ?');
-            stmt.run(finalEarnings, now.toISOString(), userId, guildId);
+            stmt.run(Number(finalEarnings), now.toISOString(), userId, guildId);
 
             // LOG JOB HISTORY - This is the new part!
             try {
@@ -442,7 +442,7 @@ export async function handleWorkSelectMenu(interaction) {
     // Update balance and last_work; also log history
     try {
         let stmt = db.prepare('UPDATE users SET balance = balance + ?, last_work = ? WHERE user_id = ? AND guild_id = ?');
-        stmt.run(finalEarnings, now.toISOString(), userId, guildId);
+        stmt.run(Number(finalEarnings), now.toISOString(), userId, guildId);
         const historyStmt = db.prepare(`
             INSERT INTO job_history (user_id, guild_id, job_name, base_earnings, multiplier, final_earnings, job_type)
             VALUES (?, ?, ?, ?, ?, ?, ?)

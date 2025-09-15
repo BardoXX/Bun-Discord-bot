@@ -36,9 +36,10 @@ async function createTicketChannel(interaction, db, config, ticketType, formData
             .replace(/[^a-z0-9-]/g, '-')
             .slice(0, 90);
 
-        // Validate parent category
-        let parentId = config.ticket_category_id;
+        // Validate parent category - check both category_id and ticket_category_id
+        let parentId = config.ticket_category_id || config.category_id;
         let parentChannel = null;
+        
         try {
             if (parentId) {
                 parentChannel = await interaction.guild.channels.fetch(parentId).catch(() => null);
@@ -178,89 +179,86 @@ async function createTicketThread(interaction, db, config, ticketType, formData)
 }
 
 /**
- * Sends the initial message in a newly created ticket
- * @param {Object} channel - Channel or thread where to send the message
- * @param {Object} user - User who created the ticket
+ * Sends the initial message in a ticket channel/thread
+ * @param {TextChannel|ThreadChannel} channel - The channel to send the message to
+ * @param {User} user - The user who created the ticket
  * @param {string} ticketType - Type of ticket
  * @param {Object|null} formData - Form data if applicable
+ * @returns {Promise<Message>} The sent message
  */
-async function sendTicketInitialMessage(channel, user, ticketType, formData) {
-    const embed = new EmbedBuilder()
-        .setColor('#00ff00')
-        .setTitle(`🎫 ${ticketType} Ticket Aangemaakt`)
-        .setDescription(`Hallo ${user}! Je ${ticketType} ticket is succesvol aangemaakt.`)
-        .addFields(
-            { name: '👤 Ticket Eigenaar', value: user.tag, inline: true },
-            { name: '🎫 Ticket Type', value: ticketType, inline: true },
-            { name: '🕐 Aangemaakt', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-        )
-        .setThumbnail(user.displayAvatarURL())
-        .setTimestamp();
-    
-    // Add form data if present
-    if (formData) {
-        const truncate = (s, max) => {
-            const str = String(s ?? '-');
-            return str.length > max ? str.slice(0, max - 1) + '…' : str;
-        };
-        const existingEmbedFields = 3; // we already added 3 fields above
-        const headerField = { name: '📄 Formulier Informatie', value: '\u200B', inline: false };
-        const MAX_EMBED_FIELDS = 25;
-        const NAME_MAX = 256;
-        const VALUE_MAX = 1024;
+async function sendTicketInitialMessage(channel, user, ticketType, formData = null) {
+    try {
+        const embed = new EmbedBuilder()
+            .setColor(0x3498db)
+            .setTitle(`🎫 ${ticketType.charAt(0).toUpperCase() + ticketType.slice(1)} Ticket`)
+            .setDescription(
+                `Bedankt voor het aanmaken van een ticket, ${user}!
+` +
+                'On team zal zo snel mogelijk reageren.\n\n' +
+                '**Gebruik onderstaande opties om het ticket te beheren:**\n' +
+                '🔒 `/ticket sluiten` - Sluit het ticket\n' +
+                '🔓 `/ticket heropenen` - Heropen het ticket\n' +
+                '📝 `/ticket hernoem <naam>` - Hernoem het ticket\n' +
+                '👥 `/ticket toevoegen <gebruiker>` - Voeg iemand toe aan het ticket\n' +
+                '❌ `/ticket verwijderen <gebruiker>` - Verwijder iemand van het ticket\n\n' +
+                '**Let op:** Ongepaste tickets worden verwijderd!'
+            )
+            .setFooter({ text: `Ticket aangemaakt door: ${user.tag}`, iconURL: user.displayAvatarURL() })
+            .setTimestamp();
 
-        if (Array.isArray(formData)) {
-            // New format: array of { name, value }
-            let cleanFields = formData
-                .filter(f => f && typeof f.name === 'string')
-                .map(f => ({
-                    name: truncate(f.name, NAME_MAX),
-                    value: truncate(f.value, VALUE_MAX),
-                    inline: formData.length >= 4 // show columns if many
-                }));
-
-            // Respect Discord's 25 fields limit
-            const remaining = Math.max(0, MAX_EMBED_FIELDS - existingEmbedFields);
-            if (remaining > 0) {
-                // Reserve one slot for the header if we have any fields to show
-                const slotsForData = Math.max(0, remaining - 1);
-                cleanFields = cleanFields.slice(0, slotsForData);
-                if (cleanFields.length) {
-                    embed.addFields(headerField);
-                    embed.addFields(cleanFields);
+        // Add form data if available
+        if (formData && Object.keys(formData).length > 0) {
+            const formFields = [];
+            for (const [key, value] of Object.entries(formData)) {
+                if (value && value.trim() !== '') {
+                    formFields.push({
+                        name: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
+                        value: value.length > 1024 ? value.substring(0, 1000) + '...' : value,
+                        inline: false
+                    });
                 }
             }
-        } else if (typeof formData === 'object') {
-            // Legacy object format -> convert to fields
-            let entries = Object.entries(formData).map(([k, v]) => ({
-                name: truncate(k, NAME_MAX),
-                value: truncate(v, VALUE_MAX),
-                inline: Object.keys(formData).length >= 4
-            }));
-            const remaining = Math.max(0, MAX_EMBED_FIELDS - existingEmbedFields);
-            if (remaining > 0) {
-                const slotsForData = Math.max(0, remaining - 1);
-                entries = entries.slice(0, slotsForData);
-                if (entries.length) {
-                    embed.addFields(headerField);
-                    embed.addFields(entries);
-                }
+            
+            if (formFields.length > 0) {
+                embed.addFields([
+                    { name: '\u200B', value: '**Ingevulde gegevens:**' },
+                    ...formFields
+                ]);
             }
         }
+
+        // Create action row with close button
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('close_ticket')
+                .setLabel('Ticket sluiten')
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji('🔒')
+        );
+
+        // Send the message
+        const message = await channel.send({
+            content: `${user} | <@&${process.env.STAFF_ROLE_ID || ''}>`,
+            embeds: [embed],
+            components: [row]
+        });
+
+        // Pin the message if it's a channel
+        if (channel.type === ChannelType.GuildText) {
+            await message.pin().catch(console.error);
+        }
+
+        return message;
+    } catch (error) {
+        console.error('Error sending initial ticket message:', error);
+        // Try to send a basic message if the embed fails
+        try {
+            return await channel.send({
+                content: `Hallo ${user}, bedankt voor het aanmaken van dit ticket! On team zal zo snel mogelijk reageren.`
+            });
+        } catch (e) {
+            console.error('Failed to send fallback ticket message:', e);
+            throw new Error('Failed to send initial ticket message');
+        }
     }
-    
-    const closeButton = new ButtonBuilder()
-        .setCustomId('close_ticket')
-        .setLabel('🔒 Sluiten')
-        .setStyle(ButtonStyle.Danger);
-    
-    const claimButton = new ButtonBuilder()
-        .setCustomId('claim_ticket')
-        .setLabel('🙋 Claimen')
-        .setStyle(ButtonStyle.Success);
-    
-    const row = new ActionRowBuilder()
-        .addComponents(claimButton, closeButton);
-    
-    await channel.send({ embeds: [embed], components: [row] });
 }

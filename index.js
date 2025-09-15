@@ -80,8 +80,21 @@ async function deployCommands() {
     try {
         console.log('🔄 Started refreshing application (/) commands.');
 
-        // Gebruik de commands die al geladen zijn in de client.commands collectie
-        const commands = client.commands.map(command => command.data.toJSON());
+        // Prepare commands array with proper JSON structure
+        const commands = [];
+        for (const [name, command] of client.commands) {
+            try {
+                // Handle both default and direct exports
+                const cmdData = command.data || (command.default && command.default.data);
+                if (cmdData) {
+                    // Convert to plain object if it's a Discord.js ApplicationCommandData
+                    const jsonData = typeof cmdData.toJSON === 'function' ? cmdData.toJSON() : cmdData;
+                    commands.push(jsonData);
+                }
+            } catch (error) {
+                console.error(`❌ Error processing command ${name}:`, error);
+            }
+        }
 
         const rest = new REST().setToken(process.env.DISCORD_TOKEN);
         

@@ -3,7 +3,11 @@ import { ackUpdate, ackReply } from '../../modules/utils/ack.js';
 import { handleWelcomeWizard as runWelcomeWizard } from './welcomeWizard.js';
 import { handleBirthdayWizard as runBirthdayWizard } from './birthdayWizard.js';
 import { handleTicketWizard as runTicketWizard } from './ticketWizard.js';
-import { handleEconomyWizard as runEconomyWizard } from './economyWizard.js';
+import { EconomyWizard } from './economyWizard.js';
+const runEconomyWizard = (interaction, db) => {
+    const wizard = new EconomyWizard(db);
+    return wizard.handleEconomyWizard(interaction);
+};
 import { createTicketEmbed } from '../utils/ticketSystem.js';
 import { setTicketConfig, getTicketConfig } from '../../modules/tickets/ticketConfig.js';
 
@@ -108,7 +112,7 @@ function buildEcoGamblingMenu(settings) {
     return { embed, components: [row1, row2, rowBack] };
 }
 
-// Jobs submenu is now integrated under Work
+// Jobs submenus
 
 function buildEcoCountingMenu(settings) {
     const goalsText = (settings.countingRewardGoals && settings.countingRewardGoals.trim()) ? settings.countingRewardGoals : '—';

@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "bun run index.js",
-    "dev": "bun --hot run index.js"
+    "dev": "bun --hot run index.js",
+    "init-db": "bun run scripts/init-db.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
@@ -14,5 +15,10 @@
   },
   "devDependencies": {
     "bun-types": "latest"
+  },
+  "bun": {
+    "dependencies": {
+      "sqlite": "latest"
+    }
   }
 }

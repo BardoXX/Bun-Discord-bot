@@ -11,19 +11,23 @@ export default {
     .addSubcommand(subcommand =>
       subcommand
         .setName('set')
-        .setDescription('Stel je verjaardag in')
+        .setDescription('Stel een verjaardag in')
         .addIntegerOption(option =>
           option.setName('dag')
-            .setDescription('Dag van je verjaardag (1-31)')
+            .setDescription('Dag van de verjaardag (1-31)')
             .setRequired(true)
             .setMinValue(1)
             .setMaxValue(31))
         .addIntegerOption(option =>
           option.setName('maand')
-            .setDescription('Maand van je verjaardag (1-12)')
+            .setDescription('Maand van de verjaardag (1-12)')
             .setRequired(true)
             .setMinValue(1)
-            .setMaxValue(12)))
+            .setMaxValue(12))
+        .addUserOption(option =>
+          option.setName('gebruiker')
+            .setDescription('De gebruiker wiens verjaardag je wilt instellen')
+            .setRequired(false)))
     .addSubcommand(subcommand =>
       subcommand
         .setName('view')
@@ -109,20 +113,38 @@ export default {
 // Table initialization is now handled by BirthdaySystem class
 
 async function handleSetBirthday(interaction, guildId, userId) {
+  const targetUser = interaction.options.getUser('gebruiker') || interaction.user;
   const day = interaction.options.getInteger('dag');
   const month = interaction.options.getInteger('maand');
+  const setBy = interaction.user.id;
 
   try {
-    // Use the birthday system to set the birthday
-    birthdaySystem.setBirthday(guildId, userId, day, month);
+    // Check if user has permission to set birthdays for others
+    if (targetUser.id !== interaction.user.id && !interaction.member.permissions.has('MANAGE_ROLES')) {
+      const errorEmbed = new EmbedBuilder()
+        .setColor('#ff0000')
+        .setTitle('❌ Geen Toestemming')
+        .setDescription('Je hebt geen toestemming om verjaardagen voor andere gebruikers in te stellen.')
+        .setTimestamp();
+      
+      return await interaction.editReply({ embeds: [errorEmbed] });
+    }
 
-    console.log(`🎂 [birthday] Set birthday for ${interaction.user.tag}: ${day}/${month}`);
+    // Use the birthday system to set the birthday
+    await birthdaySystem.setBirthday(guildId, targetUser.id, day, month, setBy);
+
+    console.log(`🎂 [birthday] Set birthday for ${targetUser.tag}: ${day}/${month} (set by ${interaction.user.tag})`);
+
+    // Get the updated birthday record to include set_at timestamp
+    const birthday = birthdaySystem.getBirthday(guildId, targetUser.id);
 
     // Create and send success embed
     const embed = birthdaySystem.createBirthdayEmbed(
-      interaction.user,
+      targetUser,
       day,
-      month
+      month,
+      setBy,
+      birthday?.set_at
     );
 
     await interaction.editReply({ embeds: [embed] });
@@ -132,7 +154,7 @@ async function handleSetBirthday(interaction, guildId, userId) {
     const errorEmbed = new EmbedBuilder()
       .setColor('#ff0000')
       .setTitle('❌ Fout')
-      .setDescription('Er is een fout opgetreden bij het instellen van je verjaardag. Controleer of de datum geldig is.')
+      .setDescription('Er is een fout opgetreden bij het instellen van de verjaardag. Controleer of de datum geldig is.')
       .setTimestamp();
 
     await interaction.editReply({ embeds: [errorEmbed] });
@@ -154,9 +176,28 @@ async function handleViewBirthday(interaction, guildId) {
     if (!birthday) {
       embed.setDescription(`**${targetUser.tag}** heeft nog geen verjaardag ingesteld.`);
     } else {
-      embed.setDescription(
-        `**${targetUser.tag}** is jarig op **${birthday.day} ${birthdaySystem.getMonthName(birthday.month)}**.`
-      );
+      let description = `**${targetUser.tag}** is jarig op **${birthday.day} ${birthdaySystem.getMonthName(birthday.month)}**.`;
+      
+      // Add who set the birthday if available
+      if (birthday.set_by && birthday.set_by !== targetUser.id) {
+        const setByUser = interaction.client.users.cache.get(birthday.set_by);
+        const setByText = setByUser ? `<@${birthday.set_by}>` : `(ID: ${birthday.set_by})`;
+        description += `\n\n👤 **Ingesteld door:** ${setByText}`;
+      }
+      
+      // Add when it was set if available
+      if (birthday.set_at) {
+        const formattedDate = new Date(birthday.set_at).toLocaleDateString('nl-NL', {
+          day: '2-digit',
+          month: 'long',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        description += `\n📅 **Datum ingesteld:** ${formattedDate}`;
+      }
+      
+      embed.setDescription(description);
     }
 
     await interaction.editReply({ embeds: [embed] });
@@ -178,52 +219,133 @@ async function handleListBirthdays(interaction, guildId) {
     const birthdays = birthdaySystem.getAllBirthdays(guildId);
 
     const embed = new EmbedBuilder()
-      .setColor('#ff69b4')
-      .setTitle('🎂 Verjaardagen')
+      .setColor('#FF69B4')
+      .setTitle('🎂 Verjaardagskalender')
+      .setThumbnail(interaction.guild.iconURL({ dynamic: true }) || 'https://i.imgur.com/9Q1fq7a.png')
+      .setFooter({ text: 'Gebruik /birthday set om je eigen verjaardag in te stellen!' })
       .setTimestamp();
 
     if (!birthdays || birthdays.length === 0) {
-      embed.setDescription('Er zijn nog geen verjaardagen ingesteld in deze server.');
-    } else {
-      // Group by month
-      const grouped = {};
-      birthdays.forEach(bd => {
-        const monthName = birthdaySystem.getMonthName(bd.month);
-        if (!grouped[monthName]) {
-          grouped[monthName] = [];
+      embed.setDescription('Er zijn nog geen verjaardagen ingesteld in deze server. \nGebruik `/birthday set` om je verjaardag toe te voegen!');
+      return await interaction.editReply({ embeds: [embed] });
+    }
+
+    // Group by month
+    const grouped = {};
+    birthdays.forEach(bd => {
+      const monthName = birthdaySystem.getMonthName(bd.month);
+      if (!grouped[monthName]) {
+        grouped[monthName] = [];
+      }
+      grouped[monthName].push({
+        ...bd,
+        day: Number(bd.day),
+        month: Number(bd.month)
+      });
+    });
+
+    // Maandelijkse emoji's
+    const monthEmojis = [
+      '❄️',  // Januari
+      '💝',  // Februari
+      '🌷',  // Maart
+      '🌸',  // April
+      '🌼',  // Mei
+      '☀️',  // Juni
+      '🏖️',  // Juli
+      '🌻',  // Augustus
+      '🍂',  // September
+      '🎃',  // Oktober
+      '🍁',  // November
+      '🎄'   // December
+    ];
+
+    // Sort months in chronological order (January to December)
+    const monthOrder = [
+      'januari', 'februari', 'maart', 'april', 'mei', 'juni',
+      'juli', 'augustus', 'september', 'oktober', 'november', 'december'
+    ];
+
+    const sortedMonths = Object.keys(grouped).sort((a, b) => {
+      return monthOrder.indexOf(a.toLowerCase()) - monthOrder.indexOf(b.toLowerCase());
+    });
+
+    // Get current date
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1; // JavaScript months are 0-indexed
+    const currentDay = now.getDate();
+
+    // Create fields for each month
+    for (const month of sortedMonths) {
+      const bds = grouped[month];
+      bds.sort((a, b) => a.day - b.day);
+      
+      let monthContent = '';
+      let upcomingBirthdays = [];
+      
+      // Get month number from the first birthday in this month group
+      const monthNumber = bds[0].month;
+      
+      bds.forEach(bd => {
+        const userMention = `• <@${bd.user_id}>`;
+        const dateStr = `**${bd.day} ${month}**`;
+        
+        // Check if birthday is today
+        if (bd.day === currentDay && monthNumber === currentMonth) {
+          upcomingBirthdays.push(`🎉 ${dateStr} - ${userMention} (Vandaag!)`);
+        } 
+        // Check if birthday is in the next 7 days
+        else if (isUpcomingBirthday(bd.day, monthNumber, currentDay, currentMonth)) {
+          const daysUntil = daysUntilBirthday(bd.day, monthNumber, currentDay, currentMonth);
+          upcomingBirthdays.push(`🎈 ${dateStr} - ${userMention} (Over ${daysUntil} dag${daysUntil !== 1 ? 'en' : ''})`);
+        } else {
+          monthContent += `${dateStr} - ${userMention}\n`;
         }
-        grouped[monthName].push({
-          ...bd,
-          day: Number(bd.day),    // Convert day to Number
-          month: Number(bd.month) // Convert month to Number
-        });
       });
 
-      let description = '';
-      for (const [month, bds] of Object.entries(grouped)) {
-        description += `**${month.charAt(0).toUpperCase() + month.slice(1)}**\n`;
-        bds.sort((a, b) => a.day - b.day);
-        description += bds.map(bd => {
-          const user = interaction.guild.members.cache.get(bd.user_id)?.user?.tag || `Gebruiker (${bd.user_id})`;
-          return `• ${bd.day} - ${user}`;
-        }).join('\n') + '\n\n';
+      // Add upcoming birthdays at the top
+      if (upcomingBirthdays.length > 0) {
+        monthContent = upcomingBirthdays.join('\n') + '\n\n' + monthContent;
       }
 
-      embed.setDescription(description);
+      // Voeg maandveld toe aan de embed
+      if (monthContent.trim() !== '') {
+        const monthIndex = monthOrder.indexOf(month.toLowerCase());
+        const monthEmoji = monthIndex >= 0 ? monthEmojis[monthIndex] : '📅';
+        
+        embed.addFields({
+          name: `${monthEmoji} ${month.charAt(0).toUpperCase() + month.slice(1)}`,
+          value: monthContent.trim(),
+          inline: true
+        });
+      }
     }
+
+    // Add total count
+    embed.setDescription(`**Totaal:** ${birthdays.length} verjaardagen geregistreerd`);
 
     await interaction.editReply({ embeds: [embed] });
   } catch (error) {
-    console.error('❌ [birthday] Error listing birthdays:', error);
-
+    console.error('Error in handleListBirthdays:', error);
     const errorEmbed = new EmbedBuilder()
-      .setColor('#ff0000')
+      .setColor('#FF0000')
       .setTitle('❌ Fout')
       .setDescription('Er is een fout opgetreden bij het ophalen van de verjaardagen.')
       .setTimestamp();
-
     await interaction.editReply({ embeds: [errorEmbed] });
   }
+}
+
+// Helper function to check if a birthday is in the next 7 days
+function isUpcomingBirthday(birthDay, birthMonth, currentDay, currentMonth) {
+  if (birthMonth !== currentMonth) return false;
+  return birthDay > currentDay && birthDay <= currentDay + 7;
+}
+
+// Helper function to calculate days until birthday
+function daysUntilBirthday(birthDay, birthMonth, currentDay, currentMonth) {
+  if (birthMonth !== currentMonth) return 0;
+  return birthDay - currentDay;
 }
 
 async function handleRemoveBirthday(interaction, guildId, userId) {

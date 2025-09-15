@@ -30,183 +30,183 @@ export async function createTicketEmbed(channel) {
 }
 
 /**
- * Creates a simple ticket (legacy support for existing system)
+ * Creates a new ticket channel with support for different ticket types
  * @param {import('discord.js').ButtonInteraction} interaction The button interaction.
+ * @param {Object} [ticketType] The type of ticket to create
  */
-export async function createTicket(interaction) {
-    // We gebruiken flags: 64 voor een bericht dat alleen de gebruiker kan zien
-    await interaction.deferReply({ flags: 64 });
+export async function createTicket(interaction, ticketType = null) {
+    // Defer the reply to prevent interaction timeout
+    await interaction.deferReply({ ephemeral: true });
 
     const db = interaction.client.db;
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
 
-    // Check for existing open ticket
-    const stmt = db.prepare('SELECT * FROM tickets WHERE user_id = ? AND guild_id = ? AND status = "open"');
-    const existingTicket = stmt.get(userId, guildId);
-
-    if (existingTicket) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff9900')
-            .setTitle('⚠️ Ticket Bestaat Al')
-            .setDescription(`Je hebt al een open ticket: <#${existingTicket.channel_id}>`)
-            .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
-    // Get guild ticket config
-    const config = getTicketConfig(db, guildId);
-
-    if (!config || (!config.ticket_category_id && !config.thread_mode)) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('❌ Configuratie Fout')
-            .setDescription('Ticket systeem is niet geconfigureerd. Neem contact op met een administrator.')
-            .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
     try {
-        // Create ticket channel or thread
-        const ticketResult = await createTicketChannelOrThread(
-            interaction, 
-            db, 
-            config, 
-            'general', 
-            null
+        // Check for existing open ticket
+        const existingTicket = await get(
+            'SELECT * FROM tickets WHERE user_id = ? AND guild_id = ? AND status = "open"',
+            [userId, guildId]
         );
 
-        // Save ticket to database
-        const insertStmt = db.prepare(`
-            INSERT INTO tickets (guild_id, user_id, channel_id, status, ticket_type)
-            VALUES (?, ?, ?, "open", ?)
-        `);
-        insertStmt.run(guildId, userId, ticketResult.channel.id, 'general');
+        if (existingTicket) {
+            const embed = new EmbedBuilder()
+                .setColor('#ff9900')
+                .setTitle('⚠️ Ticket Already Exists')
+                .setDescription(`You already have an open ticket: <#${existingTicket.channel_id}>`)
+                .setTimestamp();
 
-        const successEmbed = new EmbedBuilder()
-            .setColor('#00ff00')
-            .setTitle('✅ Ticket Aangemaakt')
-            .setDescription(`Je ticket is aangemaakt: ${ticketResult.channel}`)
-            .setTimestamp();
+            return await interaction.editReply({ embeds: [embed] });
+        }
 
-        await interaction.editReply({ embeds: [successEmbed] });
+        // Get ticket system configuration
+        const ticketSystem = await get(
+            'SELECT * FROM ticket_systems WHERE guild_id = ?',
+            [guildId]
+        );
 
-    } catch (error) {
-        console.error('Error creating ticket:', error);
-        
-        const embed = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('❌ Fout')
-            .setDescription('Er is een fout opgetreden bij het aanmaken van je ticket. Probeer het later opnieuw.')
-            .setTimestamp();
+        if (!ticketSystem) {
+            const embed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Configuration Error')
+                .setDescription('Ticket system is not configured. Please contact an administrator.')
+                .setTimestamp();
 
-        await interaction.editReply({ embeds: [embed] });
-    }
-}
+            return await interaction.editReply({ embeds: [embed] });
+        }
 
-/**
- * Handles the logic for creating a new ticket channel.
- * @param {import('discord.js').ButtonInteraction} interaction The button interaction.
- */
-export async function createTicket(interaction) {
-    // We gebruiken flags: 64 voor een bericht dat alleen de gebruiker kan zien
-    await interaction.deferReply({ flags: 64 });
+        // Parse ticket types
+        const ticketTypes = JSON.parse(ticketSystem.types || '[]');
+        const selectedType = ticketType || {};
 
-    const db = interaction.client.db;
-    const userId = interaction.user.id;
-    const guildId = interaction.guild.id;
+        // Create channel name based on naming format
+        let channelName = 'ticket';
+        if (ticketSystem.naming_format) {
+            channelName = ticketSystem.naming_format
+                .replace('{type}', selectedType.value || 'ticket')
+                .replace('{user}', interaction.user.username.toLowerCase())
+                .substring(0, 100); // Ensure channel name is within Discord's limits
+        } else {
+            channelName = `ticket-${selectedType.value || 'new'}-${interaction.user.username}`.toLowerCase();
+        }
 
-    const stmt = db.prepare('SELECT * FROM tickets WHERE user_id = ? AND guild_id = ? AND status = "open"');
-    const existingTicket = stmt.get(userId, guildId);
+        // Clean up channel name to match Discord's requirements
+        channelName = channelName
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .substring(0, 100);
 
-    if (existingTicket) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff9900')
-            .setTitle('⚠️ Ticket Bestaat Al')
-            .setDescription(`Je hebt al een open ticket: <#${existingTicket.channel_id}>`)
-            .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
-    const configStmt = db.prepare('SELECT * FROM guild_config WHERE guild_id = ?');
-    const config = configStmt.get(guildId);
-
-    if (!config || !config.ticket_category) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('❌ Configuratie Fout')
-            .setDescription('Ticket systeem is niet geconfigureerd. Neem contact op met een administrator.')
-            .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
-        return;
-    }
-
-    try {
+        // Create the ticket channel
         const ticketChannel = await interaction.guild.channels.create({
-            name: `ticket-${interaction.user.username}`,
+            name: channelName,
             type: ChannelType.GuildText,
-            parent: config.ticket_category,
+            parent: ticketSystem.category_id || null,
             permissionOverwrites: [
-                { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] }
+                {
+                    id: interaction.guild.id,
+                    deny: [PermissionFlagsBits.ViewChannel],
+                },
+                {
+                    id: interaction.user.id,
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ReadMessageHistory,
+                    ],
+                },
+                {
+                    id: interaction.client.user.id,
+                    allow: [
+                        PermissionFlagsBits.ViewChannel,
+                        PermissionFlagsBits.SendMessages,
+                        PermissionFlagsBits.ManageChannels,
+                        PermissionFlagsBits.ManageMessages,
+                    ],
+                },
             ],
         });
 
-        const insertStmt = db.prepare('INSERT INTO tickets (guild_id, user_id, channel_id, status) VALUES (?, ?, ?, "open")');
-        insertStmt.run(guildId, userId, ticketChannel.id);
+        // Add to database
+        await run(
+            'INSERT INTO tickets (guild_id, user_id, channel_id, status, type) VALUES (?, ?, ?, "open", ?)',
+            [guildId, userId, ticketChannel.id, selectedType.value || 'general']
+        );
 
+        // Create ticket embed
         const ticketEmbed = new EmbedBuilder()
-            .setColor('#00ff00')
-            .setTitle('🎫 Ticket Aangemaakt')
-            .setDescription(`Hallo ${interaction.user}! Je ticket is succesvol aangemaakt.\n\nBeschrijf je probleem of vraag hieronder en een staff lid zal zo snel mogelijk reageren.`)
+            .setColor('#5865F2')
+            .setTitle(selectedType.label ? `${selectedType.emoji || '🎫'} ${selectedType.label} Ticket` : '🎫 New Ticket')
+            .setDescription(selectedType.description || 'Please describe your issue below and our staff will assist you shortly.')
             .addFields(
-                { name: '👤 Ticket Eigenaar', value: interaction.user.tag, inline: true },
-                { name: '🕐 Aangemaakt', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+                { name: '👤 Ticket Owner', value: interaction.user.toString(), inline: true },
+                { name: '🕐 Created', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
+                { name: '🔢 Ticket ID', value: `#${ticketChannel.name}`, inline: true }
             )
             .setThumbnail(interaction.user.displayAvatarURL())
             .setTimestamp();
 
+        // Create action buttons
         const closeButton = new ButtonBuilder()
             .setCustomId('close_ticket')
-            .setLabel('🔒 Sluiten')
-            .setStyle(ButtonStyle.Danger);
+            .setLabel('Close Ticket')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('🔒');
 
         const claimButton = new ButtonBuilder()
             .setCustomId('claim_ticket')
-            .setLabel('🙋 Claimen')
-            .setStyle(ButtonStyle.Success);
+            .setLabel('Claim')
+            .setStyle(ButtonStyle.Success)
+            .setEmoji('🙋');
 
-        const row = new ActionRowBuilder()
-            .addComponents(claimButton, closeButton);
+        const row = new ActionRowBuilder().addComponents(claimButton, closeButton);
 
-        await ticketChannel.send({ embeds: [ticketEmbed], components: [row] });
+        // Send initial message
+        const ticketMessage = await ticketChannel.send({
+            content: `${interaction.user} ${ticketSystem.required_role_id ? `<@&${ticketSystem.required_role_id}>` : ''}`,
+            embeds: [ticketEmbed],
+            components: [row],
+        });
 
+        // Send success message to user
         const successEmbed = new EmbedBuilder()
-            .setColor('#00ff00')
-            .setTitle('✅ Ticket Aangemaakt')
-            .setDescription(`Je ticket is aangemaakt: ${ticketChannel}`)
+            .setColor('#57F287')
+            .setTitle('✅ Ticket Created')
+            .setDescription(`Your ticket has been created: ${ticketChannel}`)
             .setTimestamp();
 
         await interaction.editReply({ embeds: [successEmbed] });
 
-    } catch (error) {
-        console.error('Error creating ticket:', error);
-        
-        const embed = new EmbedBuilder()
-            .setColor('#ff0000')
-            .setTitle('❌ Fout')
-            .setDescription('Er is een fout opgetreden bij het aanmaken van je ticket. Probeer het later opnieuw.')
-            .setTimestamp();
+        // If log channel is set, send a log message
+        if (ticketSystem.log_channel_id) {
+            try {
+                const logChannel = await interaction.guild.channels.fetch(ticketSystem.log_channel_id);
+                if (logChannel) {
+                    const logEmbed = new EmbedBuilder()
+                        .setColor('#5865F2')
+                        .setTitle('🎫 Ticket Created')
+                        .setDescription(`**User:** ${interaction.user.tag} (${interaction.user.id})\n**Channel:** ${ticketChannel}\n**Type:** ${selectedType.label || 'General'}`)
+                        .setTimestamp();
 
-        await interaction.editReply({ embeds: [embed] });
+                    await logChannel.send({ embeds: [logEmbed] });
+                }
+            } catch (error) {
+                console.error('Failed to send log message:', error);
+            }
+        }
+
+    } catch (error) {
+        console.error('Error in createTicket:', error);
+        
+        try {
+            await interaction.editReply({
+                content: '❌ An error occurred while creating the ticket. Please try again.',
+                ephemeral: true
+            });
+        } catch (e) {
+            console.error('Failed to send error message:', e);
+        }
     }
 }
 

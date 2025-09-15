@@ -329,18 +329,22 @@ function createTables() {
     )
   `);
 
-  // Birthdays - Fixed with proper columns
+  // Birthdays table
   db.exec(`
     CREATE TABLE IF NOT EXISTS birthdays (
-      user_id TEXT,
-      guild_id TEXT,
-      birthday TEXT,
-      day INTEGER,
-      month INTEGER,
-      year INTEGER,
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      day INTEGER NOT NULL,
+      month INTEGER NOT NULL,
+      set_by TEXT NOT NULL DEFAULT 'unknown',
+      set_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, guild_id)
     )
   `);
+  
+  // Create index for faster birthday lookups
+  db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_date ON birthdays(month, day)');
 
   // Warnings (duplicate table - keeping both for compatibility)
   db.exec(`
@@ -372,12 +376,23 @@ function createTables() {
   // Ticket system tables
   // Ticket configuration per guild
   db.exec(`
-    CREATE TABLE IF NOT EXISTS ticket_config (
-      guild_id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS ticket_systems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      category_id TEXT NOT NULL DEFAULT '',
       ticket_category_id TEXT,
-      ticket_channel_id TEXT,
-      thread_mode INTEGER DEFAULT 0,
-      log_channel_id TEXT
+      log_channel_id TEXT NOT NULL DEFAULT '',
+      thread_mode BOOLEAN NOT NULL DEFAULT 0,
+      required_role_id TEXT,
+      naming_format TEXT NOT NULL DEFAULT 'ticket-{type}-{user}',
+      types TEXT NOT NULL DEFAULT '[]',
+      panel_title TEXT DEFAULT 'Open a Ticket',
+      panel_description TEXT DEFAULT 'Click the button below to create a ticket',
+      max_tickets_per_user INTEGER DEFAULT 3,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(guild_id)
     )
   `);
 
@@ -443,6 +458,9 @@ function createTables() {
       FOREIGN KEY (item_id) REFERENCES shop_items(id)
     )
   `);
+
+  // Create index for faster lookups
+  db.exec('CREATE INDEX IF NOT EXISTS idx_ticket_systems_guild_id ON ticket_systems(guild_id)');
 
   // Indices voor performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_user_guild ON users(user_id, guild_id)`);
@@ -510,20 +528,82 @@ function addMissingColumns() {
       console.log("✅ [database] 'item_data' column added to shop_items");
     }
 
+    if (!shopColumns.includes('is_limited')) {
+      db.exec(`ALTER TABLE shop_items ADD COLUMN is_limited BOOLEAN DEFAULT 0`);
+      console.log("✅ [database] 'is_limited' column added to shop_items");
+    }
+
     // Check and add missing columns for birthdays table
     const birthdayColumns = db.prepare(`PRAGMA table_info(birthdays)`).all().map(c => c.name);
     
-    if (!birthdayColumns.includes('day')) {
-      db.exec(`ALTER TABLE birthdays ADD COLUMN day INTEGER`);
-      console.log("✅ [database] 'day' column added to birthdays");
-    }
-    if (!birthdayColumns.includes('month')) {
-      db.exec(`ALTER TABLE birthdays ADD COLUMN month INTEGER`);
-      console.log("✅ [database] 'month' column added to birthdays");
-    }
-    if (!birthdayColumns.includes('year')) {
-      db.exec(`ALTER TABLE birthdays ADD COLUMN year INTEGER`);
-      console.log("✅ [database] 'year' column added to birthdays");
+    if (!birthdayColumns.includes('set_by')) {
+      // First add the column without a default value
+      db.exec(`ALTER TABLE birthdays ADD COLUMN set_by TEXT`);
+      // Then update existing rows to have the default value
+      db.exec(`UPDATE birthdays SET set_by = 'unknown' WHERE set_by IS NULL`);
+      // Finally, modify the column to be NOT NULL with default
+      db.exec(`CREATE TABLE birthdays_new (
+        user_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        day INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        set_by TEXT NOT NULL DEFAULT 'unknown',
+        set_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, guild_id)
+      )`);
+      
+      // Copy data to new table
+      db.exec(`
+        INSERT INTO birthdays_new (user_id, guild_id, day, month, set_by, set_at)
+        SELECT user_id, guild_id, day, month, COALESCE(set_by, 'unknown'), COALESCE(set_at, datetime('now'))
+        FROM birthdays
+      `);
+      
+      // Replace the old table with the new one
+      db.exec(`
+        DROP TABLE birthdays;
+        ALTER TABLE birthdays_new RENAME TO birthdays;
+      `);
+      
+      // Recreate indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_date ON birthdays(month, day)');
+      
+      console.log("✅ [database] 'set_by' and 'set_at' columns added to birthdays with proper defaults");
+    } else if (!birthdayColumns.includes('set_at')) {
+      // Only set_at is missing
+      db.exec(`ALTER TABLE birthdays ADD COLUMN set_at TEXT`);
+      db.exec(`UPDATE birthdays SET set_at = datetime('now') WHERE set_at IS NULL`);
+      
+      // Create a new table with the correct schema
+      db.exec(`CREATE TABLE birthdays_new (
+        user_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        day INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        set_by TEXT NOT NULL DEFAULT 'unknown',
+        set_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, guild_id)
+      )`);
+      
+      // Copy data to new table
+      db.exec(`
+        INSERT INTO birthdays_new (user_id, guild_id, day, month, set_by, set_at)
+        SELECT user_id, guild_id, day, month, COALESCE(set_by, 'unknown'), COALESCE(set_at, datetime('now'))
+        FROM birthdays
+      `);
+      
+      // Replace the old table with the new one
+      db.exec(`
+        DROP TABLE birthdays;
+        ALTER TABLE birthdays_new RENAME TO birthdays;
+      `);
+      
+      // Recreate indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_date ON birthdays(month, day)');
+      
+      console.log("✅ [database] 'set_at' column added to birthdays with proper defaults");
     }
 
     // Check and add missing columns for user_inventory table
@@ -585,241 +665,241 @@ function addMissingColumns() {
     }
 
     // Check and add missing columns for guild_config table
-    const guildConfigColumns = db.prepare(`PRAGMA table_info(guild_config)`).all().map(c => c.name);
+    const guildConfigCols = db.prepare(`PRAGMA table_info(guild_config)`).all().map(c => c.name);
 
-    if (!guildConfigColumns.includes('levels_enabled')) {
+    if (!guildConfigCols.includes('levels_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN levels_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'levels_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('level_up_channel')) {
+    if (!guildConfigCols.includes('level_up_channel')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN level_up_channel TEXT`);
       console.log("✅ [database] 'level_up_channel' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('xp_per_message')) {
+    if (!guildConfigCols.includes('xp_per_message')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN xp_per_message INTEGER DEFAULT 0`);
       console.log("✅ [database] 'xp_per_message' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('xp_per_minute_voice')) {
+    if (!guildConfigCols.includes('xp_per_minute_voice')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN xp_per_minute_voice INTEGER DEFAULT 0`);
       console.log("✅ [database] 'xp_per_minute_voice' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('message_cooldown')) {
+    if (!guildConfigCols.includes('message_cooldown')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN message_cooldown INTEGER DEFAULT 0`);
       console.log("✅ [database] 'message_cooldown' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_role')) {
+    if (!guildConfigCols.includes('welcome_role')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_role TEXT`);
       console.log("✅ [database] 'welcome_role' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_title')) {
+    if (!guildConfigCols.includes('welcome_title')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_title TEXT`);
       console.log("✅ [database] 'welcome_title' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_color')) {
+    if (!guildConfigCols.includes('welcome_color')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_color TEXT`);
       console.log("✅ [database] 'welcome_color' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_image')) {
+    if (!guildConfigCols.includes('welcome_image')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_image TEXT`);
       console.log("✅ [database] 'welcome_image' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_footer')) {
+    if (!guildConfigCols.includes('welcome_footer')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_footer TEXT`);
       console.log("✅ [database] 'welcome_footer' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('welcome_embed_enabled')) {
+    if (!guildConfigCols.includes('welcome_embed_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN welcome_embed_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'welcome_embed_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('member_count_channel')) {
+    if (!guildConfigCols.includes('member_count_channel')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN member_count_channel TEXT`);
       console.log("✅ [database] 'member_count_channel' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('member_count_format')) {
+    if (!guildConfigCols.includes('member_count_format')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN member_count_format TEXT`);
       console.log("✅ [database] 'member_count_format' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('inventory_enabled')) {
+    if (!guildConfigCols.includes('inventory_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN inventory_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'inventory_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('inventory_public_viewing')) {
+    if (!guildConfigCols.includes('inventory_public_viewing')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN inventory_public_viewing INTEGER DEFAULT 0`);
       console.log("✅ [database] 'inventory_public_viewing' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('inventory_max_items_per_category')) {
+    if (!guildConfigCols.includes('inventory_max_items_per_category')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN inventory_max_items_per_category INTEGER DEFAULT 0`);
       console.log("✅ [database] 'inventory_max_items_per_category' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('invites_enabled')) {
+    if (!guildConfigCols.includes('invites_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN invites_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'invites_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('invite_log_channel')) {
+    if (!guildConfigCols.includes('invite_log_channel')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN invite_log_channel TEXT`);
       console.log("✅ [database] 'invite_log_channel' column added to guild_config");
     }
 
     // Economy: Roulette settings
-    if (!guildConfigColumns.includes('roulette_enabled')) {
+    if (!guildConfigCols.includes('roulette_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN roulette_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'roulette_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('roulette_min_bet')) {
+    if (!guildConfigCols.includes('roulette_min_bet')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN roulette_min_bet INTEGER DEFAULT 10`);
       console.log("✅ [database] 'roulette_min_bet' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('roulette_max_bet')) {
+    if (!guildConfigCols.includes('roulette_max_bet')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN roulette_max_bet INTEGER DEFAULT 1000`);
       console.log("✅ [database] 'roulette_max_bet' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('roulette_cooldown_seconds')) {
+    if (!guildConfigCols.includes('roulette_cooldown_seconds')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN roulette_cooldown_seconds INTEGER DEFAULT 30`);
       console.log("✅ [database] 'roulette_cooldown_seconds' column added to guild_config");
     }
 
     // Economy: Slot machine settings
-    if (!guildConfigColumns.includes('slot_enabled')) {
+    if (!guildConfigCols.includes('slot_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN slot_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'slot_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('slot_min_bet')) {
+    if (!guildConfigCols.includes('slot_min_bet')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN slot_min_bet INTEGER DEFAULT 10`);
       console.log("✅ [database] 'slot_min_bet' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('slot_max_bet')) {
+    if (!guildConfigCols.includes('slot_max_bet')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN slot_max_bet INTEGER DEFAULT 1000`);
       console.log("✅ [database] 'slot_max_bet' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('slot_cooldown_seconds')) {
+    if (!guildConfigCols.includes('slot_cooldown_seconds')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN slot_cooldown_seconds INTEGER DEFAULT 30`);
       console.log("✅ [database] 'slot_cooldown_seconds' column added to guild_config");
     }
 
     // Counting rewards config
-    if (!guildConfigColumns.includes('counting_reward_enabled')) {
+    if (!guildConfigCols.includes('counting_reward_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN counting_reward_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'counting_reward_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('counting_reward_amount')) {
+    if (!guildConfigCols.includes('counting_reward_amount')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN counting_reward_amount INTEGER DEFAULT 5`);
       console.log("✅ [database] 'counting_reward_amount' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('counting_reward_goal_interval')) {
+    if (!guildConfigCols.includes('counting_reward_goal_interval')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN counting_reward_goal_interval INTEGER DEFAULT 10`);
       console.log("✅ [database] 'counting_reward_goal_interval' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('counting_reward_specific_goals')) {
+    if (!guildConfigCols.includes('counting_reward_specific_goals')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN counting_reward_specific_goals TEXT`);
       console.log("✅ [database] 'counting_reward_specific_goals' column added to guild_config");
     }
 
     // Advanced moderation settings
-    if (!guildConfigColumns.includes('anti_invite_enabled')) {
+    if (!guildConfigCols.includes('anti_invite_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'anti_invite_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_default_state')) {
+    if (!guildConfigCols.includes('anti_invite_default_state')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_default_state INTEGER DEFAULT 1`);
       console.log("✅ [database] 'anti_invite_default_state' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_channels')) {
+    if (!guildConfigCols.includes('anti_invite_channels')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_channels TEXT`);
       console.log("✅ [database] 'anti_invite_channels' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_categories')) {
+    if (!guildConfigCols.includes('anti_invite_categories')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_categories TEXT`);
       console.log("✅ [database] 'anti_invite_categories' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_exempt_channels')) {
+    if (!guildConfigCols.includes('anti_invite_exempt_channels')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_channels TEXT`);
       console.log("✅ [database] 'anti_invite_exempt_channels' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_exempt_categories')) {
+    if (!guildConfigCols.includes('anti_invite_exempt_categories')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_categories TEXT`);
       console.log("✅ [database] 'anti_invite_exempt_categories' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_invite_exempt_roles')) {
+    if (!guildConfigCols.includes('anti_invite_exempt_roles')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_exempt_roles TEXT`);
       console.log("✅ [database] 'anti_invite_exempt_roles' column added to guild_config");
     }
 
     // Anti-spam settings
-    if (!guildConfigColumns.includes('anti_spam_enabled')) {
+    if (!guildConfigCols.includes('anti_spam_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'anti_spam_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_default_state')) {
+    if (!guildConfigCols.includes('anti_spam_default_state')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_default_state INTEGER DEFAULT 1`);
       console.log("✅ [database] 'anti_spam_default_state' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_channels')) {
+    if (!guildConfigCols.includes('anti_spam_channels')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_channels TEXT`);
       console.log("✅ [database] 'anti_spam_channels' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_categories')) {
+    if (!guildConfigCols.includes('anti_spam_categories')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_categories TEXT`);
       console.log("✅ [database] 'anti_spam_categories' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_exempt_channels')) {
+    if (!guildConfigCols.includes('anti_spam_exempt_channels')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_channels TEXT`);
       console.log("✅ [database] 'anti_spam_exempt_channels' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_exempt_categories')) {
+    if (!guildConfigCols.includes('anti_spam_exempt_categories')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_categories TEXT`);
       console.log("✅ [database] 'anti_spam_exempt_categories' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_exempt_roles')) {
+    if (!guildConfigCols.includes('anti_spam_exempt_roles')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_exempt_roles TEXT`);
       console.log("✅ [database] 'anti_spam_exempt_roles' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_message_threshold')) {
+    if (!guildConfigCols.includes('anti_spam_message_threshold')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_message_threshold INTEGER DEFAULT 5`);
       console.log("✅ [database] 'anti_spam_message_threshold' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('anti_spam_time_window')) {
+    if (!guildConfigCols.includes('anti_spam_time_window')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_time_window INTEGER DEFAULT 5`);
       console.log("✅ [database] 'anti_spam_time_window' column added to guild_config");
     }
 
     // AI auto-responder settings
-    if (!guildConfigColumns.includes('ai_enabled')) {
+    if (!guildConfigCols.includes('ai_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_enabled INTEGER DEFAULT 0`);
       console.log("✅ [database] 'ai_enabled' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_provider')) {
+    if (!guildConfigCols.includes('ai_provider')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_provider TEXT`);
       console.log("✅ [database] 'ai_provider' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_model')) {
+    if (!guildConfigCols.includes('ai_model')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_model TEXT`);
       console.log("✅ [database] 'ai_model' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_system_prompt')) {
+    if (!guildConfigCols.includes('ai_system_prompt')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_system_prompt TEXT`);
       console.log("✅ [database] 'ai_system_prompt' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_temperature')) {
+    if (!guildConfigCols.includes('ai_temperature')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_temperature REAL DEFAULT 0.7`);
       console.log("✅ [database] 'ai_temperature' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_max_tokens')) {
+    if (!guildConfigCols.includes('ai_max_tokens')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_max_tokens INTEGER DEFAULT 256`);
       console.log("✅ [database] 'ai_max_tokens' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_channels')) {
+    if (!guildConfigCols.includes('ai_channels')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_channels TEXT`);
       console.log("✅ [database] 'ai_channels' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_require_mention')) {
+    if (!guildConfigCols.includes('ai_require_mention')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_require_mention INTEGER DEFAULT 1`);
       console.log("✅ [database] 'ai_require_mention' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_cooldown_seconds')) {
+    if (!guildConfigCols.includes('ai_cooldown_seconds')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_cooldown_seconds INTEGER DEFAULT 15`);
       console.log("✅ [database] 'ai_cooldown_seconds' column added to guild_config");
     }
-    if (!guildConfigColumns.includes('ai_channel_prompts')) {
+    if (!guildConfigCols.includes('ai_channel_prompts')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN ai_channel_prompts TEXT`);
       console.log("✅ [database] 'ai_channel_prompts' column added to guild_config");
     }
@@ -832,7 +912,7 @@ function addMissingColumns() {
     ];
 
     for (const column of columnsToAdd) {
-      if (!guildConfigColumns.includes(column.name)) {
+      if (!guildConfigCols.includes(column.name)) {
         console.log(`[Database] Adding missing column ${column.name} to guild_config`);
         db.prepare(`ALTER TABLE guild_config ADD COLUMN ${column.name} ${column.type}`).run();
       }
@@ -850,17 +930,94 @@ function addMissingColumns() {
       'eco_balance_enabled','eco_crime_enabled','eco_daily_enabled','eco_deposit_enabled','eco_eco_enabled','eco_jobstats_enabled','eco_shop_enabled','eco_weekly_enabled','eco_withdraw_enabled','eco_work_enabled'
     ];
     for (const col of ecoFlags) {
-      if (!guildConfigColumns.includes(col)) {
+      if (!guildConfigCols.includes(col)) {
         db.exec(`ALTER TABLE guild_config ADD COLUMN ${col} INTEGER DEFAULT 1`);
         console.log(`✅ [database] '${col}' column added to guild_config`);
       }
     }
 
+    // Rob configuration
+    const robConfigs = [
+      'rob_enabled',
+      'rob_bank_enabled',
+      'rob_bank_success_rate',
+      'rob_bank_cooldown',
+      'rob_bank_fine_percentage',
+      'rob_bank_reward_multiplier',
+      'rob_cooldown',
+      'rob_min_amount',
+      'rob_max_percent',
+      'rob_required_role',
+      'rob_bonus_roles',
+      'rob_success_rate',
+      'rob_fine_percent'
+    ];
+
+    for (const col of robConfigs) {
+      if (!guildConfigCols.includes(col)) {
+        if (col.endsWith('_enabled') || col.endsWith('_rate') || col.endsWith('_percentage') || col.endsWith('_multiplier')) {
+          db.prepare(`ALTER TABLE guild_config ADD COLUMN ${col} REAL`).run();
+        } else if (col.endsWith('_cooldown')) {
+          db.prepare(`ALTER TABLE guild_config ADD COLUMN ${col} INTEGER`).run();
+        } else {
+          db.prepare(`ALTER TABLE guild_config ADD COLUMN ${col} INTEGER`).run();
+        }
+        console.log(`✅ [database] Added column ${col} to guild_config`);
+      }
+    }
+
+    // Check and add missing columns for ticket_systems table
+    try {
+      const ticketSysColumns = db.prepare(`PRAGMA table_info(ticket_systems)`).all().map(c => c.name);
+      
+      // Add ticket_category_id if it doesn't exist
+      if (!ticketSysColumns.includes('ticket_category_id')) {
+        db.exec(`ALTER TABLE ticket_systems ADD COLUMN ticket_category_id TEXT`);
+        console.log("✅ [database] 'ticket_category_id' column added to ticket_systems");
+        
+        // Copy existing category_id values to ticket_category_id for backward compatibility
+        db.exec(`UPDATE ticket_systems SET ticket_category_id = category_id`);
+        console.log("✅ [database] Copied existing category_id values to ticket_category_id");
+      }
+      
+      // Check and add other missing columns with proper defaults
+      const columnsToAdd = [
+        { name: 'panel_title', type: 'TEXT DEFAULT \'Open a Ticket\'' },
+        { name: 'panel_description', type: 'TEXT DEFAULT \'Click the button below to create a ticket\'' },
+        { name: 'max_tickets_per_user', type: 'INTEGER DEFAULT 3' },
+        { name: 'thread_mode', type: 'BOOLEAN NOT NULL DEFAULT 0' },
+        { name: 'naming_format', type: 'TEXT NOT NULL DEFAULT \'ticket-{type}-{user}\'' },
+        { name: 'types', type: 'TEXT NOT NULL DEFAULT \'[]\'' },
+        { name: 'log_channel_id', type: 'TEXT NOT NULL DEFAULT \'\'' }
+      ];
+
+      for (const { name, type } of columnsToAdd) {
+        if (!ticketSysColumns.includes(name)) {
+          db.exec(`ALTER TABLE ticket_systems ADD COLUMN ${name} ${type}`);
+          console.log(`✅ [database] '${name}' column added to ticket_systems`);
+        }
+      }
+
+      // Ensure required columns have default values for existing rows
+      const requiredColumns = ['category_id', 'log_channel_id'];
+      for (const col of requiredColumns) {
+        if (ticketSysColumns.includes(col)) {
+          db.exec(`UPDATE ticket_systems SET ${col} = '' WHERE ${col} IS NULL`);
+        }
+      }
+
+    } catch (error) {
+      console.error("❌ [database] Error updating ticket_systems table:", error);
+      throw error; // Re-throw to be caught by the outer try-catch
+    }
+
     console.log('✅ [database] All missing columns checked and added');
   } catch (error) {
     console.error('❌ [database] Error adding missing columns:', error);
+    throw error; // Ensure the error is propagated up
   }
 }
+
 
 export function safeTransaction(callback) {
   const db = getDb(); 
