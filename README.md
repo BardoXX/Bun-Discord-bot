@@ -12,7 +12,6 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 ---
 
 ### 💰 Economie
-- `/config economy` — stel alle economy commands in via Wizard
 - `/balance` — bekijk je saldo  
 - `/deposit` — zet geld op de bank  
 - `/withdraw` — haal geld van de bank  
