@@ -56,8 +56,6 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
-        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-        if (!(await ensureFeatureEnabled(interaction, 'work', 'work'))) return;
         const db = interaction.client.db;
         const userId = interaction.user.id;
         const guildId = interaction.guild.id;

@@ -32,7 +32,7 @@ function buildBirthdayComponents(cfg) {
   return [row1, row2];
 }
 
-export async function handleBirthdayWizard(interaction, db) {
+async function handleBirthdayWizard(interaction, db) {
   try {
     const guildId = interaction.guild.id;
 
@@ -60,19 +60,21 @@ export async function handleBirthdayWizard(interaction, db) {
   }
 }
 
-export async function handleBirthdayWizardComponent(interaction) {
+async function handleBirthdayWizardComponent(interaction) {
   try {
     const db = interaction.client.db;
     const guildId = interaction.guild.id;
     const cfg = getBirthdayConfig(db, guildId);
-    const birthdaySystem = interaction.client.birthdaySystem || (interaction.client.birthdaySystem = new BirthdaySystem(db));
+    const birthdaySystem = interaction.client.birthdaySystem || (interaction.client.birthdaySystem = new BirthdaySystem(db, interaction.client));
 
     // Handle close button
     if (interaction.isButton?.() && interaction.customId === 'birthday_wizard_close') {
       try {
-        if (interaction.message?.deletable) {
+        // Try to delete the message if it exists and is deletable
+        if (interaction.message?.deletable && interaction.message.id) {
           await interaction.message.delete();
         } else {
+          // Fallback: update the interaction to clear it
           await interaction.update({
             content: 'Verjaardag configuratie gesloten.',
             embeds: [],
@@ -80,7 +82,31 @@ export async function handleBirthdayWizardComponent(interaction) {
           });
         }
       } catch (error) {
-        console.error('❌ [BirthdayWizard] Error closing wizard:', error);
+        // Handle Discord API errors gracefully (e.g., message already deleted)
+        if (error.code === 10008) {
+          // Message not found - just update the interaction
+          try {
+            await interaction.update({
+              content: 'Verjaardag configuratie gesloten.',
+              embeds: [],
+              components: []
+            });
+          } catch (updateError) {
+            console.error('❌ [BirthdayWizard] Error updating interaction after message not found:', updateError.message);
+          }
+        } else {
+          // Log other errors but don't crash
+          console.error('❌ [BirthdayWizard] Error closing wizard:', error.message);
+          try {
+            await interaction.update({
+              content: 'Verjaardag configuratie gesloten.',
+              embeds: [],
+              components: []
+            });
+          } catch (updateError) {
+            console.error('❌ [BirthdayWizard] Error updating interaction after unexpected error:', updateError.message);
+          }
+        }
       }
       return;
     }
@@ -253,3 +279,5 @@ export async function handleBirthdayWizardComponent(interaction) {
     }
   }
 }
+
+export { handleBirthdayWizard, handleBirthdayWizardComponent };

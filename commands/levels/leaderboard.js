@@ -31,14 +31,18 @@ export default {
 };
 
 async function showLevelLeaderboard(interaction, db, guildId) {
-    // Check if levels are enabled
-    const configStmt = db.prepare('SELECT levels_enabled FROM guild_config WHERE guild_id = ?');
-    const config = configStmt.get(guildId);
+    let config = null;
+    try {
+        const configStmt = db.prepare('SELECT levels_enabled FROM guild_config WHERE guild_id = ?');
+        config = configStmt.get(guildId) || null;
+    } catch (e) {
+        config = null;
+    }
 
-    if (!config || !config.levels_enabled) {
+    if (config && config.levels_enabled === 0) {
         const embed = new EmbedBuilder()
             .setColor('#ff9900')
-            .setTitle('📊 Level Systeem Uitgeschakeld')
+            .setTitle('Level Systeem Uitgeschakeld')
             .setDescription('Het level systeem is niet ingeschakeld op deze server.')
             .setTimestamp();
 
@@ -59,7 +63,7 @@ async function showLevelLeaderboard(interaction, db, guildId) {
     if (!topUsers || topUsers.length === 0) {
         const embed = new EmbedBuilder()
             .setColor('#ff9900')
-            .setTitle('📊 Geen Level Data')
+            .setTitle('Geen Level Data')
             .setDescription('Er zijn nog geen gebruikers met XP op deze server.')
             .setTimestamp();
 
@@ -69,7 +73,7 @@ async function showLevelLeaderboard(interaction, db, guildId) {
 
     const embed = new EmbedBuilder()
         .setColor('#ffd700')
-        .setTitle('🏆 Level Leaderboard')
+        .setTitle('Level Leaderboard')
         .setDescription('Top 10 gebruikers op deze server')
         .setTimestamp();
 
@@ -78,7 +82,7 @@ async function showLevelLeaderboard(interaction, db, guildId) {
         const userData = topUsers[i];
         try {
             const user = await interaction.client.users.fetch(userData.user_id);
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `**${i + 1}.**`;
+            const medal = i === 0 ? ' ' : i === 1 ? ' ' : i === 2 ? ' ' : `**${i + 1}.**`;
             leaderboardText += `${medal} ${user.displayName} - Level ${userData.level} (${userData.total_xp} XP)\n`;
         } catch (error) {
             leaderboardText += `${i + 1}. Onbekende Gebruiker - Level ${userData.level} (${userData.total_xp} XP)\n`;
@@ -86,7 +90,7 @@ async function showLevelLeaderboard(interaction, db, guildId) {
     }
 
     embed.addFields({
-        name: '🏅 Rankings',
+        name: 'Rankings',
         value: leaderboardText,
         inline: false
     });
@@ -109,7 +113,7 @@ async function showLevelLeaderboard(interaction, db, guildId) {
         
         if (userData) {
             embed.addFields({
-                name: '📍 Jouw Positie',
+                name: 'Jouw Positie',
                 value: `#${userRank} - Level ${userData.level} (${userData.total_xp} XP)`,
                 inline: false
             });
@@ -120,11 +124,16 @@ async function showLevelLeaderboard(interaction, db, guildId) {
 }
 
 async function showInviteLeaderboard(interaction, db, guildId) {
-    // Check if invites are enabled
-    const configStmt = db.prepare('SELECT invites_enabled FROM guild_config WHERE guild_id = ?');
-    const config = configStmt.get(guildId);
+    // Check if invites are enabled; if config missing, treat as disabled only when explicitly 0
+    let config = null;
+    try {
+        const stmt = db.prepare('SELECT invites_enabled FROM guild_config WHERE guild_id = ?');
+        config = stmt.get(guildId) || null;
+    } catch (e) {
+        config = null;
+    }
 
-    if (!config || !config.invites_enabled) {
+    if (config && config.invites_enabled === 0) {
         const embed = new EmbedBuilder()
             .setColor('#ff9900')
             .setTitle('📨 Invite Tracking Uitgeschakeld')
@@ -135,7 +144,6 @@ async function showInviteLeaderboard(interaction, db, guildId) {
         return;
     }
 
-    // Get top 10 users by invites
     const stmt = db.prepare(`
         SELECT user_id, invites, fake_invites, left_invites
         FROM user_invites 
@@ -186,24 +194,53 @@ async function showInviteLeaderboard(interaction, db, guildId) {
 }
 
 async function showCombinedLeaderboard(interaction, db, guildId) {
+    let config = null;
+    try {
+        const configStmt = db.prepare('SELECT levels_enabled, invites_enabled FROM guild_config WHERE guild_id = ?');
+        config = configStmt.get(guildId) || null;
+    } catch (e) {
+        config = null;
+    }
+
+    if (config && config.levels_enabled === 0 && config.invites_enabled === 0) {
+        const embed = new EmbedBuilder()
+            .setColor('#ff9900')
+            .setTitle('Leaderboard Systeem Uitgeschakeld')
+            .setDescription('Geen leaderboard systemen zijn ingeschakeld op deze server.')
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed] });
+        return;
+    }
+
     const embed = new EmbedBuilder()
         .setColor('#800080')
         .setTitle('🏆 Server Leaderboards')
         .setDescription('Top gebruikers op deze server')
         .setTimestamp();
 
-    // Get level leaderboard config
-    const levelConfigStmt = db.prepare('SELECT levels_enabled FROM guild_config WHERE guild_id = ?');
-    const levelConfig = levelConfigStmt.get(guildId);
+    // Get level leaderboard config (default to enabled if missing)
+    let levelConfig = null;
+    try {
+        const levelConfigStmt = db.prepare('SELECT levels_enabled FROM guild_config WHERE guild_id = ?');
+        levelConfig = levelConfigStmt.get(guildId) || null;
+    } catch (e) {
+        levelConfig = null;
+    }
 
     // Get invite leaderboard config
-    const inviteConfigStmt = db.prepare('SELECT invites_enabled FROM guild_config WHERE guild_id = ?');
-    const inviteConfig = inviteConfigStmt.get(guildId);
+    let inviteConfig = null;
+    try {
+        const inviteConfigStmt = db.prepare('SELECT invites_enabled FROM guild_config WHERE guild_id = ?');
+        inviteConfig = inviteConfigStmt.get(guildId) || null;
+    } catch (e) {
+        inviteConfig = null;
+    }
 
     let hasData = false;
 
     // Show level leaderboard if enabled
-    if (levelConfig && levelConfig.levels_enabled) {
+    if (!levelConfig || levelConfig.levels_enabled) {
         const levelStmt = db.prepare(`
             SELECT user_id, level, total_xp
             FROM user_levels 

@@ -1,6 +1,5 @@
 // commands/economie/deposit.js
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { ensureFeatureEnabled } from '../utils/economyFeatures.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -17,7 +16,6 @@ export default {
                 .addChoices({ name: 'Alles', value: 'all' })),
 
     async execute(interaction) {
-        if (!(await ensureFeatureEnabled(interaction, 'deposit', 'deposit'))) return;
         await interaction.deferReply(); 
         
         const db = interaction.client.db;

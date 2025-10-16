@@ -2,11 +2,13 @@
 import { Client, GatewayIntentBits, Collection, REST, Routes } from 'discord.js';
 import { initializeDatabase, getDb } from 'commands/utils/database.js';
 import BirthdayScheduler from 'commands/utils/birthdayScheduler.js';
+import GiveawayScheduler from 'commands/utils/giveawayScheduler.js';
 import { BirthdaySystem } from 'commands/utils/birthdaySystem.js';
 import { readdirSync } from 'fs';
 import { join } from 'path';
 import Database from 'bun:sqlite';
 
+// Configure client with rate limiting and cache settings
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds,
@@ -14,7 +16,52 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildVoiceStates
-    ] 
+    ],
+    rest: {
+        retries: 3,
+        timeout: 30000,
+        offset: 500,
+        globalRequestsPerSecond: 45,
+        rejectOnRateLimit: (rateLimitData) => {
+            console.warn('⚠️ Rate limit hit:', rateLimitData);
+            return rateLimitData.timeToReset;
+        }
+    },
+    makeCache: (manager) => {
+        // Only cache messages in the client cache
+        if (manager.name === 'MessageManager') {
+            const collection = new Collection();
+            // Manually handle the size limit
+            collection.maxSize = 200;
+            const originalSet = collection.set;
+            collection.set = function(key, value) {
+                // If we're at max size, remove oldest message
+                if (this.size >= this.maxSize) {
+                    const oldest = this.firstKey();
+                    if (oldest) this.delete(oldest);
+                }
+                return originalSet.call(this, key, value);
+            };
+            return collection;
+        }
+        // Use default caching for other managers
+        return new Collection();
+    },
+    sweepers: {
+        messages: {
+            interval: 300, // 5 minutes
+            lifetime: 1800 // 30 minutes in seconds
+        },
+        users: {
+            interval: 3600, // 1 hour
+            filter: () => [], // Empty array means don't sweep any users
+            lifetime: 0
+        },
+        threads: {
+            interval: 3600, // 1 hour
+            lifetime: 14400 // 4 hours
+        }
+    }
 });
 
 // Initialize database
@@ -29,6 +76,7 @@ client.db = db;
 console.log('📊 Database initialized with all required tables');
 
 const birthdayScheduler = new BirthdayScheduler(client, db);
+const giveawayScheduler = new GiveawayScheduler(client, db);
 const birthdaySystem = new BirthdaySystem(db);
 client.birthdaySystem = birthdaySystem;
 
@@ -75,10 +123,20 @@ for (const file of eventFiles) {
     }
 }
 
-// Deploy commands
+// Deploy commands with rate limit handling
 async function deployCommands() {
     try {
         console.log('🔄 Started refreshing application (/) commands.');
+
+        // Check if we recently deployed commands to avoid rate limits
+        const lastDeployTime = client.lastDeployTime || 0;
+        const timeSinceLastDeploy = Date.now() - lastDeployTime;
+        const minDeployInterval = 5 * 60 * 1000; // 5 minutes minimum between deployments
+
+        if (timeSinceLastDeploy < minDeployInterval) {
+            console.log(`⏳ Skipping command deployment - last deployment was ${Math.round(timeSinceLastDeploy / 1000)}s ago`);
+            return;
+        }
 
         // Prepare commands array with proper JSON structure
         const commands = [];
@@ -96,22 +154,57 @@ async function deployCommands() {
             }
         }
 
-        const rest = new REST().setToken(process.env.DISCORD_TOKEN);
-        
+        if (commands.length === 0) {
+            console.log('⚠️ No commands to deploy');
+            return;
+        }
+
+        const rest = new REST({
+            version: '10',
+            retries: 5,
+            timeout: 60000,
+            offset: 1000,
+            globalRequestsPerSecond: 1, // Very conservative rate limit
+            rejectOnRateLimit: (rateLimitData) => {
+                console.warn('⚠️ REST Rate limit hit:', rateLimitData);
+                // Return timeToReset + buffer to avoid immediate retry
+                return (rateLimitData.timeToReset || 60) * 1000 + 5000;
+            }
+        }).setToken(process.env.DISCORD_TOKEN);
+
+        console.log(`📤 Deploying ${commands.length} commands...`);
         await rest.put(
             Routes.applicationCommands(process.env.CLIENT_ID),
             { body: commands },
         );
 
-        console.log(`✅ Successfully reloaded ${commands.length} application (/) commands.`);
+        // Update last deployment time
+        client.lastDeployTime = Date.now();
+        console.log(`✅ Successfully deployed ${commands.length} application (/) commands.`);
+
     } catch (error) {
-        console.error('❌ Error deploying commands:', error);
+        if (error.code === 429) {
+            console.error('❌ Rate limited by Discord API. Will retry later.');
+        } else {
+            console.error('❌ Error deploying commands:', error.message);
+        }
+        // Don't throw the error to prevent bot crash
     }
 }
 
 // Load environment variables
 if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
     console.error('❌ DISCORD_TOKEN and CLIENT_ID must be set in .env file');
+    process.exit(1);
+}
+
+// Initialize database
+try {
+    console.log('🔄 Initializing database...');
+    initializeDatabase();
+    console.log('✅ Database initialized successfully');
+} catch (error) {
+    console.error('❌ Failed to initialize database:', error);
     process.exit(1);
 }
 
@@ -147,9 +240,11 @@ client.once('ready', async () => {
     console.log(`🤖 Bot is ready! Logged in as ${client.user.tag}`);
     deployCommands();
     birthdayScheduler.start();
+    giveawayScheduler.start();
 });
 
 client.birthdayScheduler = birthdayScheduler;
+client.giveawayScheduler = giveawayScheduler;
 
 // Graceful shutdown
 process.on('SIGINT', () => {

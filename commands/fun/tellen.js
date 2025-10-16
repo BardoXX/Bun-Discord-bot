@@ -41,7 +41,7 @@ export default {
         const guildId = interaction.guild.id;
 
         // Get counting configuration from database
-        const configStmt = db.prepare('SELECT counting_channel, counting_number FROM guild_config WHERE guild_id = ?');
+        const configStmt = db.prepare('SELECT counting_channel, counting_number, last_counting_user FROM guild_config WHERE guild_id = ?');
         const config = configStmt.get(guildId);
 
         if (!config || !config.counting_channel) {
@@ -84,14 +84,26 @@ export default {
 
 async function handleStatus(interaction, config, countingChannel) {
     const currentNumber = config.counting_number != null ? Number(config.counting_number) : 0;
-    
+
+    // Get the last counting user information
+    let lastCountingUser = 'Niemand';
+    if (config.last_counting_user) {
+        try {
+            const user = await interaction.client.users.fetch(config.last_counting_user);
+            lastCountingUser = `${user}`;
+        } catch (error) {
+            lastCountingUser = 'Onbekende gebruiker';
+        }
+    }
+
     const embed = new EmbedBuilder()
         .setColor('#0099ff')
         .setTitle('🔢 Tellen Status')
         .addFields(
             { name: 'Tel Kanaal', value: `${countingChannel}`, inline: true },
             { name: 'Huidig Getal', value: `${currentNumber}`, inline: true },
-            { name: 'Volgend Getal', value: `${currentNumber + 1}`, inline: true }
+            { name: 'Volgend Getal', value: `${currentNumber + 1}`, inline: true },
+            { name: 'Laatste Teller', value: lastCountingUser, inline: true }
         )
         .setDescription(`Het tel spel is actief in ${countingChannel}. Het volgende getal dat getypt moet worden is **${currentNumber + 1}**.\n\nLet op: beheer dit voortaan via \`/config economy\` → 🔢 Counting beloningen.`)
         .setTimestamp();
@@ -101,7 +113,7 @@ async function handleStatus(interaction, config, countingChannel) {
 
 async function handleReset(interaction, db, guildId, countingChannel) {
     try {
-        const updateStmt = db.prepare('UPDATE guild_config SET counting_number = 0 WHERE guild_id = ?');
+        const updateStmt = db.prepare('UPDATE guild_config SET counting_number = 0, last_counting_user = NULL WHERE guild_id = ?');
         updateStmt.run(guildId);
 
         const embed = new EmbedBuilder()
@@ -140,7 +152,7 @@ async function handleReset(interaction, db, guildId, countingChannel) {
 
 async function handleSet(interaction, db, guildId, countingChannel, newNumber) {
     try {
-        const updateStmt = db.prepare('UPDATE guild_config SET counting_number = ? WHERE guild_id = ?');
+        const updateStmt = db.prepare('UPDATE guild_config SET counting_number = ?, last_counting_user = NULL WHERE guild_id = ?');
         updateStmt.run(newNumber, guildId);
 
         const embed = new EmbedBuilder()

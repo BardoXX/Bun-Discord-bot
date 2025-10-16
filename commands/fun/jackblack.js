@@ -384,8 +384,6 @@ export default {
                 .setMinValue(1)),
 
     async execute(interaction) {
-        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-        if (!(await ensureFeatureEnabled(interaction, 'blackjack', 'blackjack'))) return;
         await interaction.deferReply();
         
         const db = interaction.client.db;

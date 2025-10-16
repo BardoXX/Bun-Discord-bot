@@ -14,8 +14,6 @@ export default {
     .setDescription('Claim je wekelijkse beloning'),
 
   async execute(interaction) {
-    const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-    if (!(await ensureFeatureEnabled(interaction, 'weekly', 'weekly'))) return;
     const db = interaction.client.db;
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;

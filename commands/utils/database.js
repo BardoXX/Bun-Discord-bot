@@ -37,19 +37,17 @@ export function initializeDatabase() {
         db.exec("PRAGMA mmap_size = 300000000;");
         db.exec("PRAGMA foreign_keys = ON;");
         db.exec("PRAGMA busy_timeout = 5000;");
-        
         console.log('📊 [database] Database opened with optimized settings');
         
         createTables();
         addMissingColumns();
         
-        console.log('✅ [database] All tables initialized');
-    } catch (error) {
-        console.error('❌ [database] Failed to initialize database:', error);
-        process.exit(1);
-    }
+        console.log('✅ [database] All missing columns checked and added');
+  } catch (error) {
+    console.error('❌ [database] Error adding missing columns:', error);
+    throw error;
+  }
 }
-
 /**
  * Execute a SQL query and return the result
  * @param {string} sql - The SQL query to execute
@@ -107,6 +105,10 @@ function createTables() {
       last_weekly DATETIME,
       last_slot DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_robbery INTEGER DEFAULT 0,
+      last_bank_robbery INTEGER DEFAULT 0,
+      jailed_until INTEGER DEFAULT 0,
+      level INTEGER DEFAULT 1,
       PRIMARY KEY (user_id, guild_id)
     )
   `);
@@ -164,7 +166,14 @@ function createTables() {
       counting_reward_enabled INTEGER DEFAULT 0,
       counting_reward_amount INTEGER DEFAULT 5,
       counting_reward_goal_interval INTEGER DEFAULT 10,
-      counting_reward_specific_goals TEXT
+      counting_reward_specific_goals TEXT,
+      -- Warning system settings
+      max_warnings_before_action INTEGER DEFAULT 0,
+      auto_warn_action TEXT DEFAULT 'none',
+      auto_warn_channel TEXT,
+      -- Cleanup settings
+      cleanup_notifications INTEGER DEFAULT 1,
+      daily_summary INTEGER DEFAULT 0
     )
   `);
 
@@ -249,57 +258,90 @@ function createTables() {
     ) 
   `);
 
-  // Tickets
+  // Ticket system tables - Consolidated and cleaned up
   db.exec(`
-    CREATE TABLE IF NOT EXISTS tickets (
+    CREATE TABLE IF NOT EXISTS ticket_types (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT,
-      user_id TEXT,
-      channel_id TEXT,
-      status TEXT DEFAULT 'open',
-      ticket_type TEXT,
-      panel_id INTEGER,
-      button_id INTEGER
+      name TEXT NOT NULL,
+      description TEXT,
+      guild_id TEXT NOT NULL,
+      category_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(name, guild_id)
     )
   `);
 
-  // Ticket panels
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_panels (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT,
-      panel_name TEXT,
-      channel_id TEXT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
       message_id TEXT,
-      embed_title TEXT,
-      embed_description TEXT,
-      embed_color TEXT
+      title TEXT,
+      description TEXT,
+      color TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(guild_id, channel_id)
     )
   `);
 
-  // Ticket buttons
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticket_buttons (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      panel_id INTEGER,
-      label TEXT,
-      style TEXT,
+      panel_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
       emoji TEXT,
-      ticket_type TEXT,
+      style TEXT DEFAULT 'PRIMARY',
+      ticket_type TEXT NOT NULL,
       use_form BOOLEAN DEFAULT 0,
       form_fields TEXT,
       role_requirement TEXT,
-      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id) ON DELETE CASCADE,
+      UNIQUE(panel_id, ticket_type)
     )
   `);
 
-  // Ticket configuration
   db.exec(`
-    CREATE TABLE IF NOT EXISTS ticket_config (
-      guild_id TEXT PRIMARY KEY,
-      ticket_category_id TEXT,
-      thread_mode BOOLEAN DEFAULT 0,
-      log_channel_id TEXT
+    CREATE TABLE IF NOT EXISTS tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      category_id INTEGER,
+      status TEXT DEFAULT 'open',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME,
+      closed_by TEXT,
+      claimed_by TEXT,
+      claimed_at DATETIME,
+      ticket_type TEXT,
+      panel_id INTEGER,
+      button_id INTEGER,
+      title TEXT,
+      description TEXT,
+      close_reason TEXT,
+      transcript_url TEXT,
+      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id) ON DELETE SET NULL,
+      FOREIGN KEY (button_id) REFERENCES ticket_buttons(id) ON DELETE SET NULL,
+      UNIQUE(channel_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      message_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      content TEXT,
+      is_note BOOLEAN DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+      UNIQUE(message_id)
     )
   `);
 
@@ -346,6 +388,32 @@ function createTables() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_birthdays_date ON birthdays(month, day)');
 
+  // Giveaways table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS giveaways (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      end_time DATETIME NOT NULL,
+      winners INTEGER DEFAULT 1,
+      min_level INTEGER DEFAULT 0,
+      min_invites INTEGER DEFAULT 0,
+      created_by TEXT NOT NULL,
+      participants TEXT DEFAULT '[]',
+      bonus_roles TEXT DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(guild_id, message_id)
+    )
+  `);
+
+  // Create index for faster giveaway lookups
+  db.exec('CREATE INDEX IF NOT EXISTS idx_giveaways_guild ON giveaways(guild_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_giveaways_end_time ON giveaways(end_time)');
+
   // Warnings (duplicate table - keeping both for compatibility)
   db.exec(`
     CREATE TABLE IF NOT EXISTS warnings (
@@ -354,98 +422,42 @@ function createTables() {
       user_id TEXT NOT NULL,
       moderator_id TEXT NOT NULL,
       reason TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      expires_at INTEGER
+    )
+  `);
+
+  // Auto warning actions log
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auto_warn_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      warning_count INTEGER NOT NULL,
       timestamp INTEGER NOT NULL
     )
   `);
   
-  // Job history
+  // Economy jobs table
   db.exec(`
-    CREATE TABLE IF NOT EXISTS job_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      guild_id TEXT NOT NULL,
-      job_name TEXT NOT NULL,
-      base_earnings INTEGER NOT NULL,
-      multiplier REAL DEFAULT 1,
-      final_earnings INTEGER NOT NULL,
-      work_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-      job_type TEXT DEFAULT 'default'
-    )
-  `);
-
-  // Ticket system tables
-  // Ticket configuration per guild
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ticket_systems (
+    CREATE TABLE IF NOT EXISTS eco_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guild_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      category_id TEXT NOT NULL DEFAULT '',
-      ticket_category_id TEXT,
-      log_channel_id TEXT NOT NULL DEFAULT '',
-      thread_mode BOOLEAN NOT NULL DEFAULT 0,
+      name TEXT NOT NULL,
+      min_payout INTEGER NOT NULL,
+      max_payout INTEGER NOT NULL,
+      min_level INTEGER DEFAULT 1,
+      premium INTEGER DEFAULT 0,
       required_role_id TEXT,
-      naming_format TEXT NOT NULL DEFAULT 'ticket-{type}-{user}',
-      types TEXT NOT NULL DEFAULT '[]',
-      panel_title TEXT DEFAULT 'Open a Ticket',
-      panel_description TEXT DEFAULT 'Click the button below to create a ticket',
-      max_tickets_per_user INTEGER DEFAULT 3,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(guild_id)
-    )
-  `);
-
-  // Ticket panels
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ticket_panels (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT,
-      panel_name TEXT,
-      channel_id TEXT,
-      message_id TEXT,
-      embed_title TEXT,
-      embed_description TEXT,
-      embed_color TEXT
-    )
-  `);
-
-  // Ticket panel buttons
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ticket_buttons (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      panel_id INTEGER,
-      label TEXT,
-      style TEXT,
-      emoji TEXT,
-      ticket_type TEXT,
-      use_form INTEGER DEFAULT 0,
-      form_fields TEXT,
-      role_requirement TEXT,
-      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id)
-    )
-  `);
-
-  // Tickets table (updated structure)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tickets (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      guild_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      status TEXT DEFAULT 'open',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      closed_at DATETIME,
-      claimed_by TEXT,
-      ticket_type TEXT,
-      panel_id INTEGER,
-      button_id INTEGER,
-      FOREIGN KEY (panel_id) REFERENCES ticket_panels(id),
-      FOREIGN KEY (button_id) REFERENCES ticket_buttons(id)
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(guild_id, name)
+
     )
   `);
 
-  // Purchase logs
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -458,7 +470,49 @@ function createTables() {
       FOREIGN KEY (item_id) REFERENCES shop_items(id)
     )
   `);
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS user_economy (
+      user_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      wallet INTEGER DEFAULT 0,
+      bank INTEGER DEFAULT 0,
+      last_robbery DATETIME,
+      last_bank_robbery DATETIME,
+      jailed_until DATETIME,
+      level INTEGER DEFAULT 1,
+      PRIMARY KEY (user_id, guild_id)
+    )
+  `);
 
+  // Ticket systems configuration
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_systems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      category_id TEXT,
+      ticket_category_id TEXT,
+      panel_title TEXT DEFAULT 'Open a Ticket',
+      panel_description TEXT DEFAULT 'Click the button below to create a ticket',
+      max_tickets_per_user INTEGER DEFAULT 3,
+      thread_mode BOOLEAN NOT NULL DEFAULT 0,
+      naming_format TEXT NOT NULL DEFAULT 'ticket-{type}-{user}',
+      types TEXT NOT NULL DEFAULT '[]',
+      log_channel_id TEXT NOT NULL DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(guild_id)
+    )
+  `);
+
+  // Cleanup logs
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cleanup_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      warnings_cleaned INTEGER NOT NULL
+    )
+  `);
+  
   // Create index for faster lookups
   db.exec('CREATE INDEX IF NOT EXISTS idx_ticket_systems_guild_id ON ticket_systems(guild_id)');
 
@@ -472,20 +526,66 @@ function createTables() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_purchase_logs_user ON purchase_logs(user_id, guild_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_purchase_logs_item ON purchase_logs(item_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_birthdays_guild ON birthdays(guild_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_giveaways_guild ON giveaways(guild_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_giveaways_end_time ON giveaways(end_time)`);
 }
 
 function addMissingColumns() {
   try {
+    // Check and add missing columns for guild_config table first
+    const configColumns = db.prepare(`PRAGMA table_info(guild_config)`).all().map(c => c.name);
+    
+    // Add economy feature columns with default enabled (1)
+    const economyFeatures = [
+      'eco_balance_enabled', 'eco_crime_enabled', 'eco_daily_enabled',
+      'eco_deposit_enabled', 'eco_eco_enabled', 'eco_jobstats_enabled',
+      'eco_shop_enabled', 'eco_weekly_enabled', 'eco_withdraw_enabled',
+      'eco_work_enabled', 'poker_enabled', 'rob_enabled',
+      'roulette_enabled', 'slot_enabled', 'bj_enabled'
+    ];
+
+    for (const feature of economyFeatures) {
+      if (!configColumns.includes(feature)) {
+        db.exec(`ALTER TABLE guild_config ADD COLUMN ${feature} INTEGER DEFAULT 1`);
+        console.log(`✅ [database] '${feature}' column added to guild_config with default enabled`);
+      } else {
+        // Update existing NULL values to 1 (enabled)
+        db.exec(`UPDATE guild_config SET ${feature} = 1 WHERE ${feature} IS NULL`);
+      }
+    }
+
+    // Check and add missing columns for giveaways table
+    try {
+      const giveawayColumns = db.prepare(`PRAGMA table_info(giveaways)`).all().map(c => c.name);
+
+      if (!giveawayColumns.includes('bonus_roles')) {
+        db.exec(`ALTER TABLE giveaways ADD COLUMN bonus_roles TEXT DEFAULT '[]'`);
+        console.log("✅ [database] 'bonus_roles' column added to giveaways");
+      }
+    } catch (error) {
+      // Giveaways table might not exist yet, which is fine
+      console.log("ℹ️ [database] Giveaways table not yet created or error checking columns");
+    }
+
     // Check and add missing columns for users table
     const userColumns = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
-    
-    if (!userColumns.includes('id')) {
-      db.exec(`ALTER TABLE users ADD COLUMN id TEXT`);
-      // Copy user_id to id column for existing records
-      db.exec(`UPDATE users SET id = user_id WHERE id IS NULL`);
-      // Now create the index after the column exists
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_users_id ON users(id)`);
-      console.log("✅ [database] 'id' column added to users");
+
+    // Ensure users table has all required robbery columns
+    if (!userColumns.includes('last_robbery')) {
+      db.exec(`ALTER TABLE users ADD COLUMN last_robbery INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'last_robbery' column added to users");
+    }
+    if (!userColumns.includes('last_bank_robbery')) {
+      db.exec(`ALTER TABLE users ADD COLUMN last_bank_robbery INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'last_bank_robbery' column added to users");
+    }
+    if (!userColumns.includes('jailed_until')) {
+      db.exec(`ALTER TABLE users ADD COLUMN jailed_until INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'jailed_until' column added to users");
+    }
+    if (!userColumns.includes('level')) {
+      db.exec(`ALTER TABLE users ADD COLUMN level INTEGER DEFAULT 1`);
+      console.log("✅ [database] 'level' column added to users");
     }
 
     // Ensure users.last_roulette exists
@@ -531,6 +631,14 @@ function addMissingColumns() {
     if (!shopColumns.includes('is_limited')) {
       db.exec(`ALTER TABLE shop_items ADD COLUMN is_limited BOOLEAN DEFAULT 0`);
       console.log("✅ [database] 'is_limited' column added to shop_items");
+    }
+    if (!userColumns.includes('last_yearly')) {
+      db.exec(`ALTER TABLE users ADD COLUMN last_yearly DATETIME`);
+      console.log("✅ [database] 'last_yearly' column added to users");
+    }
+    if (!userColumns.includes('last_monthly')) {
+      db.exec(`ALTER TABLE users ADD COLUMN last_monthly DATETIME`);
+      console.log("✅ [database] 'last_monthly' column added to users");
     }
 
     // Check and add missing columns for birthdays table
@@ -606,6 +714,37 @@ function addMissingColumns() {
       console.log("✅ [database] 'set_at' column added to birthdays with proper defaults");
     }
 
+    // Ensure user_economy table has required columns
+    try {
+      const econColumns = db.prepare(`PRAGMA table_info(user_economy)`).all().map(c => c.name);
+      if (!econColumns.includes('wallet')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN wallet INTEGER DEFAULT 0`);
+        console.log("✅ [database] 'wallet' column added to user_economy");
+      }
+      if (!econColumns.includes('bank')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN bank INTEGER DEFAULT 0`);
+        console.log("✅ [database] 'bank' column added to user_economy");
+      }
+      if (!econColumns.includes('last_robbery')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN last_robbery DATETIME`);
+        console.log("✅ [database] 'last_robbery' column added to user_economy");
+      }
+      if (!econColumns.includes('last_bank_robbery')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN last_bank_robbery DATETIME`);
+        console.log("✅ [database] 'last_bank_robbery' column added to user_economy");
+      }
+      if (!econColumns.includes('jailed_until')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN jailed_until DATETIME`);
+        console.log("✅ [database] 'jailed_until' column added to user_economy");
+      }
+      if (!econColumns.includes('level')) {
+        db.exec(`ALTER TABLE user_economy ADD COLUMN level INTEGER DEFAULT 1`);
+        console.log("✅ [database] 'level' column added to user_economy");
+      }
+    } catch (e) {
+      // Table may not exist on first run; createTables() will handle creation
+    }
+
     // Check and add missing columns for user_inventory table
     const inventoryColumns = db.prepare(`PRAGMA table_info(user_inventory)`).all().map(c => c.name);
     
@@ -621,6 +760,18 @@ function addMissingColumns() {
       if (!ticketColumns.includes('ticket_type')) {
         db.exec(`ALTER TABLE tickets ADD COLUMN ticket_type TEXT`);
         console.log("✅ [database] 'ticket_type' column added to tickets");
+      }
+      if (!ticketColumns.includes('category_id')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN category_id INTEGER`);
+        console.log("✅ [database] 'category_id' column added to tickets");
+      }
+      if (!ticketColumns.includes('closed_by')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN closed_by TEXT`);
+        console.log("✅ [database] 'closed_by' column added to tickets");
+      }
+      if (!ticketColumns.includes('transcript_url')) {
+        db.exec(`ALTER TABLE tickets ADD COLUMN transcript_url TEXT`);
+        console.log("✅ [database] 'transcript_url' column added to tickets");
       }
       
       if (!ticketColumns.includes('panel_id')) {
@@ -794,6 +945,12 @@ function addMissingColumns() {
       console.log("✅ [database] 'counting_reward_specific_goals' column added to guild_config");
     }
 
+    // Add last_counting_user column for tracking who last counted
+    if (!guildConfigCols.includes('last_counting_user')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN last_counting_user TEXT`);
+      console.log("✅ [database] 'last_counting_user' column added to guild_config");
+    }
+
     // Advanced moderation settings
     if (!guildConfigCols.includes('anti_invite_enabled')) {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_invite_enabled INTEGER DEFAULT 0`);
@@ -857,9 +1014,22 @@ function addMissingColumns() {
       db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_message_threshold INTEGER DEFAULT 5`);
       console.log("✅ [database] 'anti_spam_message_threshold' column added to guild_config");
     }
-    if (!guildConfigCols.includes('anti_spam_time_window')) {
-      db.exec(`ALTER TABLE guild_config ADD COLUMN anti_spam_time_window INTEGER DEFAULT 5`);
-      console.log("✅ [database] 'anti_spam_time_window' column added to guild_config");
+    // Warning system settings
+    if (!guildConfigCols.includes('max_warnings_before_action')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN max_warnings_before_action INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'max_warnings_before_action' column added to guild_config");
+    }
+    if (!guildConfigCols.includes('auto_warn_action')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN auto_warn_action TEXT DEFAULT 'none'`);
+      console.log("✅ [database] 'auto_warn_action' column added to guild_config");
+    }
+    if (!guildConfigCols.includes('auto_warn_channel')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN auto_warn_channel TEXT`);
+      console.log("✅ [database] 'auto_warn_channel' column added to guild_config");
+    }
+    if (!guildConfigCols.includes('auto_warn_timeout_duration')) {
+      db.exec(`ALTER TABLE guild_config ADD COLUMN auto_warn_timeout_duration INTEGER DEFAULT 0`);
+      console.log("✅ [database] 'auto_warn_timeout_duration' column added to guild_config");
     }
 
     // AI auto-responder settings
@@ -1011,6 +1181,19 @@ function addMissingColumns() {
       throw error; // Re-throw to be caught by the outer try-catch
     }
 
+    // Check and add missing columns for warnings table
+    try {
+      const warningsColumns = db.prepare(`PRAGMA table_info(warnings)`).all().map(c => c.name);
+
+      if (!warningsColumns.includes('expires_at')) {
+        db.exec(`ALTER TABLE warnings ADD COLUMN expires_at INTEGER`);
+        console.log("✅ [database] 'expires_at' column added to warnings table");
+      }
+    } catch (error) {
+      // Warnings table might not exist yet, which is fine
+      console.log("ℹ️ [database] Warnings table not yet created or error checking columns");
+    }
+
     console.log('✅ [database] All missing columns checked and added');
   } catch (error) {
     console.error('❌ [database] Error adding missing columns:', error);
@@ -1018,9 +1201,8 @@ function addMissingColumns() {
   }
 }
 
-
 export function safeTransaction(callback) {
-  const db = getDb(); 
+  const db = getDb();
   db.exec('BEGIN');
   try {
     const result = callback(db);

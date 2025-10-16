@@ -1,4 +1,5 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, RoleSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
+import { formatMessage } from '../helper/formatMessage.js';
 
 function getWelcomeConfig(db, guildId) {
   const row = db.prepare(`SELECT welcome_channel, welcome_role, welcome_title, welcome_message, welcome_color, welcome_image, welcome_footer, welcome_embed_enabled FROM guild_config WHERE guild_id = ?`).get(guildId) || {};
@@ -27,7 +28,17 @@ function buildWelcomeEmbed(cfg) {
       { name: 'Bericht', value: (cfg.message || '—').slice(0, 200) + ((cfg.message?.length || 0) > 200 ? '…' : ''), inline: false },
       { name: 'Kleur', value: cfg.color || '—', inline: true },
       { name: 'Afbeelding', value: cfg.image || '—', inline: true },
-      { name: 'Footer', value: cfg.footer || '—', inline: false }
+      { name: 'Footer', value: cfg.footer || '—', inline: false },
+      {
+        name: '💡 Beschikbare Placeholders',
+        value: '• **{user}** - Noemt de nieuwe gebruiker\n• **{guild}** - Naam van de server\n• **{member_count}** - Aantal leden\n\n*Deze placeholders werken in titel, bericht en footer!*',
+        inline: false
+      },
+      {
+        name: '🎨 Discord Formatting',
+        value: '• **\\*\\*tekst\\*\\*** - **Vetgedrukt**\n• *\\*tekst\\** - *Cursief*\n• `\\`tekst\\`` - `Code`\n• ~~\\~\\~tekst\\~\\~~~ - ~~Doorgestreept~~\n• \\_\\_tekst\\_\\_ - __Onderstreept__',
+        inline: false
+      }
     )
     .setTimestamp();
 }
@@ -57,14 +68,14 @@ function buildWelcomeComponents(cfg) {
   return [row1, row2, row3, row4, row5];
 }
 
-export async function handleWelcomeWizard(interaction, db) {
+async function handleWelcomeWizard(interaction, db) {
   const guildId = interaction.guild.id;
   db.prepare('INSERT OR IGNORE INTO guild_config (guild_id) VALUES (?)').run(guildId);
   const cfg = getWelcomeConfig(db, guildId);
   await interaction.editReply({ embeds: [buildWelcomeEmbed(cfg)], components: buildWelcomeComponents(cfg) });
 }
 
-export async function handleWelcomeWizardComponent(interaction) {
+async function handleWelcomeWizardComponent(interaction) {
   const db = interaction.client.db;
   const guildId = interaction.guild.id;
   const cfg = getWelcomeConfig(db, guildId);
@@ -102,19 +113,19 @@ export async function handleWelcomeWizardComponent(interaction) {
   };
 
   if (interaction.isButton?.() && interaction.customId === 'welcome_wizard_edit_title') {
-    return openModal('welcome_wizard_modal_title', 'Titel aanpassen', 'Titel', TextInputStyle.Short, cfg.title || '');
+    return openModal('welcome_wizard_modal_title', 'Titel aanpassen', 'Titel ({user}, {guild}, {member_count})', TextInputStyle.Short, cfg.title || '**Welkom** bij {guild}!');
   }
   if (interaction.isButton?.() && interaction.customId === 'welcome_wizard_edit_message') {
-    return openModal('welcome_wizard_modal_message', 'Bericht aanpassen', 'Bericht', TextInputStyle.Paragraph, cfg.message || '');
+    return openModal('welcome_wizard_modal_message', 'Bericht aanpassen', 'Bericht (gebruik placeholders)', TextInputStyle.Paragraph, cfg.message || '**Welkom** {user} in *{guild}*! We hebben nu **{member_count}** leden!');
   }
   if (interaction.isButton?.() && interaction.customId === 'welcome_wizard_edit_color') {
-    return openModal('welcome_wizard_modal_color', 'Kleur aanpassen', 'Hex kleur (bijv. #00ff00)', TextInputStyle.Short, cfg.color || '');
+    return openModal('welcome_wizard_modal_color', 'Kleur aanpassen', 'Hex kleur (bijv. #00ff00)', TextInputStyle.Short, cfg.color || '#00ff00');
   }
   if (interaction.isButton?.() && interaction.customId === 'welcome_wizard_edit_image') {
     return openModal('welcome_wizard_modal_image', 'Afbeelding aanpassen', 'Afbeelding URL of "user_avatar"', TextInputStyle.Short, cfg.image || '');
   }
   if (interaction.isButton?.() && interaction.customId === 'welcome_wizard_edit_footer') {
-    return openModal('welcome_wizard_modal_footer', 'Footer aanpassen', 'Footer tekst', TextInputStyle.Short, cfg.footer || '');
+    return openModal('welcome_wizard_modal_footer', 'Footer aanpassen', 'Footer ({user}, {guild}, {member_count})', TextInputStyle.Short, cfg.footer || '*Geniet* van je verblijf bij {guild}!');
   }
 
   if (interaction.isModalSubmit?.()) {
@@ -147,21 +158,29 @@ export async function handleWelcomeWizardComponent(interaction) {
     try {
       const ncfg = getWelcomeConfig(db, guildId);
       if (ncfg.embedEnabled) {
+        const replacements = {
+          user: `<@${interaction.user.id}>`,
+          guild: interaction.guild.name,
+          member_count: interaction.guild.memberCount
+        };
+
         const e = new EmbedBuilder()
           .setColor(ncfg.color || '#00ff00')
-          .setTitle(ncfg.title || 'Welkom!')
-          .setDescription((ncfg.message || 'Welkom {user} in {guild}!').replaceAll('{user}', `<@${interaction.user.id}>`).replaceAll('{guild}', interaction.guild.name).replaceAll('{member_count}', String(interaction.guild.memberCount)))
+          .setTitle(formatMessage(ncfg.title || '**Welkom** bij {guild}!', replacements))
+          .setDescription(formatMessage(ncfg.message || '**Welkom** {user} in *{guild}*!', replacements))
           .setTimestamp();
         if (ncfg.image) {
           if (ncfg.image === 'user_avatar') e.setThumbnail(interaction.user.displayAvatarURL()); else e.setImage(ncfg.image);
         }
-        if (ncfg.footer) e.setFooter({ text: ncfg.footer });
+        if (ncfg.footer) e.setFooter({ text: formatMessage(ncfg.footer || '*Geniet* van je verblijf bij {guild}!', replacements) });
         await ch.send({ embeds: [e] });
       } else {
-        const text = (ncfg.message || 'Welkom {user} in {guild}!')
-          .replaceAll('{user}', `<@${interaction.user.id}>`)
-          .replaceAll('{guild}', interaction.guild.name)
-          .replaceAll('{member_count}', String(interaction.guild.memberCount));
+        const replacements = {
+          user: `<@${interaction.user.id}>`,
+          guild: interaction.guild.name,
+          member_count: interaction.guild.memberCount
+        };
+        const text = formatMessage(ncfg.message || '**Welkom** {user} in *{guild}*!', replacements);
         await ch.send(text);
       }
       return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#00cc66').setTitle('✅ Voorbeeld verzonden').setTimestamp()] });
@@ -174,3 +193,5 @@ export async function handleWelcomeWizardComponent(interaction) {
     return interaction.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor('#00cc66').setTitle('✅ Welkom-instellingen opgeslagen').setTimestamp()] });
   }
 }
+
+export { handleWelcomeWizard, handleWelcomeWizardComponent };

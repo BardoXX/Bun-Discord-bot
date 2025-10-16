@@ -16,6 +16,9 @@ export default {
                 return stmt.get(message.guild.id);
             });
 
+            // Always return early to disable automatic XP awarding
+            return;
+
             if (!config || !config.levels_enabled) return;
 
             await addXPToUser(message.author.id, message.guild.id, db, config, message);
@@ -135,21 +138,6 @@ export async function execute(interaction) {
     const targetUser = interaction.options.getUser('gebruiker') || interaction.user;
     const guildId = interaction.guild.id;
 
-    // Check if levels are enabled and get embed customization settings
-    const configStmt = db.prepare('SELECT levels_enabled, level_embed_image, level_embed_footer, level_embed_color FROM guild_config WHERE guild_id = ?');
-    const config = configStmt.get(guildId);
-
-    if (!config || !config.levels_enabled) {
-        const embed = new EmbedBuilder()
-            .setColor('#ff9900')
-            .setTitle('📊 Level Systeem Uitgeschakeld')
-            .setDescription('Het level systeem is niet ingeschakeld op deze server.')
-            .setTimestamp();
-
-        await interaction.reply({ embeds: [embed] });
-        return;
-    }
-
     // Get user's level data
     const stmt = db.prepare('SELECT * FROM user_levels WHERE user_id = ? AND guild_id = ?');
     const levelData = stmt.get(targetUser.id, guildId);
@@ -166,11 +154,11 @@ export async function execute(interaction) {
     }
 
     // Calculate XP needed for next level
-    const currentLevel = levelData.level;
-    const currentXP = levelData.xp;
+    const currentLevel = Number(levelData.level);
+    const currentXP = Number(levelData.xp);
     const xpForCurrentLevel = calculateXPForLevel(currentLevel);
     const xpForNextLevel = calculateXPForLevel(currentLevel + 1);
-    const xpNeeded = xpForNextLevel - levelData.total_xp;
+    const xpNeeded = xpForNextLevel - Number(levelData.total_xp);
     const xpProgress = currentXP;
     const xpRequired = xpForNextLevel - xpForCurrentLevel;
 
@@ -180,7 +168,7 @@ export async function execute(interaction) {
         FROM user_levels 
         WHERE guild_id = ? AND total_xp > ?
     `);
-    const rank = rankStmt.get(guildId, levelData.total_xp).rank;
+    const rank = rankStmt.get(guildId, Number(levelData.total_xp)).rank;
 
     // Check for active boosters
     const boosterStmt = db.prepare(`
@@ -199,26 +187,12 @@ export async function execute(interaction) {
             { name: '🏆 Level', value: `${currentLevel}`, inline: true },
             { name: '⭐ XP', value: `${currentXP}/${xpRequired}`, inline: true },
             { name: '📈 Rank', value: `#${rank}`, inline: true },
-            { name: '💫 Totaal XP', value: `${levelData.total_xp}`, inline: true },
+            { name: '💫 Totaal XP', value: `${Number(levelData.total_xp)}`, inline: true },
             { name: '🎯 XP Nodig', value: `${xpNeeded}`, inline: true },
             { name: '📊 Voortgang', value: createProgressBar(xpProgress, xpRequired), inline: false }
         )
-        .setTimestamp();
-
-    // Apply guild-specific embed customization if available, otherwise use defaults
-    if (config.level_embed_color) {
-        embed.setColor(config.level_embed_color);
-    } else {
-        embed.setColor('#00ff00');
-    }
-
-    if (config.level_embed_image) {
-        embed.setImage(config.level_embed_image);
-    }
-
-    if (config.level_embed_footer) {
-        embed.setFooter({ text: config.level_embed_footer });
-    }
+        .setTimestamp()
+        .setColor('#00ff00');
 
     if (booster) {
         const expiresAt = new Date(booster.expires_at);

@@ -25,14 +25,20 @@ function toBool(v, def = false) {
 
 function getGuildSlotConfig(db, guildId) {
   try {
+    // Ensure guild has a config row
+    db.prepare(`
+      INSERT OR IGNORE INTO guild_config (guild_id, slot_enabled, slot_min_bet, slot_max_bet, slot_cooldown_seconds)
+      VALUES (?, 1, 10, 1000, 30)
+    `).run(guildId);
+    
     const row = db.prepare(`
       SELECT 
-        COALESCE(slot_enabled, 0) AS enabled,
+        1 AS enabled,
         COALESCE(slot_min_bet, 10) AS min_bet,
         COALESCE(slot_max_bet, 1000) AS max_bet,
         COALESCE(slot_cooldown_seconds, 30) AS cooldown
       FROM guild_config WHERE guild_id = ?
-    `).get(guildId) || {};
+    `).get(guildId) || { enabled: 1, min_bet: 10, max_bet: 1000, cooldown: 30 };
     let minBet = Math.max(1, toNumber(row.min_bet, 10));
     let maxBet = Math.max(1, toNumber(row.max_bet, 1000));
     if (minBet > maxBet) { const t = minBet; minBet = maxBet; maxBet = t; }
@@ -43,7 +49,7 @@ function getGuildSlotConfig(db, guildId) {
       cooldown: Math.max(0, toNumber(row.cooldown, 30)),
     };
   } catch {
-    return { enabled: false, minBet: 10, maxBet: 1000, cooldown: 30 };
+    return { enabled: true, minBet: 10, maxBet: 1000, cooldown: 30 };
   }
 }
 
@@ -84,8 +90,6 @@ export default {
     ),
 
   async execute(interaction) {
-    const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-    if (!(await ensureFeatureEnabled(interaction, 'slot', 'slot'))) return;
     const db = interaction.client.db;
     const userId = interaction.user.id;
     const guildId = interaction.guild.id;
@@ -93,9 +97,6 @@ export default {
     const amount = Math.floor(toNumber(interaction.options.getInteger('bedrag'), 0));
 
     const cfg = getGuildSlotConfig(db, guildId);
-    if (!cfg.enabled) {
-      return interaction.reply({ content: '🎰 Slots staan uit op deze server.', ephemeral: true });
-    }
 
     // Ensure user row
     let user = db.prepare('SELECT * FROM users WHERE user_id = ? AND guild_id = ?').get(userId, guildId);

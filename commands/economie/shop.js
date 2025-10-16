@@ -7,8 +7,6 @@ export default {
         .setDescription('Bekijk en koop items uit de shop'),
 
     async execute(interaction) {
-        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-        if (!(await ensureFeatureEnabled(interaction, 'shop', 'shop'))) return;
         const db = interaction.client.db;
         const guildId = interaction.guild.id;
         const userId = interaction.user.id;
@@ -31,7 +29,7 @@ export default {
             const embed = new EmbedBuilder()
                 .setColor('#ff9900')
                 .setTitle('🏪 Shop Leeg')
-                .setDescription('Er zijn nog geen items in de shop! Een administrator kan items toevoegen via `/config shop add`.')
+                .setDescription('Er zijn nog geen items in de shop! Een administrator kan items toevoegen met `/eco shop add`.')
                 .setTimestamp();
 
             await interaction.reply({ embeds: [embed] });

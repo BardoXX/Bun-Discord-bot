@@ -3,8 +3,9 @@ import { safeDbOperation, safeTransaction } from '../commands/utils/database.js'
 import { handleCountingMessage } from './countingHelper.js';
 import { generateReply } from '../modules/ai/aiClient.js';
 import { decryptString } from '../modules/ai/secretUtil.js';
-import { getTicketConfig } from '../modules/tickets/ticketConfig.js';
-import { createTicketChannelOrThread } from '../modules/tickets/ticketCreate.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { getTicketConfig } from '../commands/tickets/ticketUtils.js';
+import { createTicketChannel } from '../commands/tickets/ticketUtils.js';
 
 // Cache for spam detection
 const spamCache = new Map();
@@ -18,74 +19,73 @@ async function maybeHandleAIReply(message, db) {
             try {
                 if (v === null || v === undefined) return def;
                 if (typeof v === 'boolean') return v;
-                if (typeof v === 'number') return v !== 0;
-                if (typeof v === 'string') return v.toLowerCase() === 'true' || v === '1';
+                if (typeof v === 'number') return v > 0;
+                if (typeof v === 'string') {
+                    const s = v.trim().toLowerCase();
+                    if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+                    if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+                    return def;
+                }
                 return Boolean(v);
-            } catch { return def; }
+            } catch (e) {
+                console.error('Error normalizing boolean value:', e);
+                return def;
+            }
         };
-        // Fetch AI config
-        const cfg = safeDbOperation(() => {
-            const stmt = db.prepare(`SELECT ai_enabled, ai_provider, ai_model, ai_system_prompt, ai_temperature, ai_max_tokens, ai_channels, ai_require_mention, ai_cooldown_seconds, ai_channel_prompts, ai_use_guild_secrets, ai_openai_key_enc, ai_openai_base_enc FROM guild_config WHERE guild_id = ?`);
-            return stmt.get(message.guild.id);
-        });
-        
-        if (!cfg) return;
-        
-        const isEnabled = normalizeBool(cfg.ai_enabled, false);
-        if (!isEnabled) return;
+
+        const config = await getTicketConfig(db, message.guild.id);
+        if (!config || !config.ai_enabled) return false;
 
         // Check if AI is enabled for this channel
-        const channelList = (cfg.ai_channels || '').split(',').map(s => s.trim()).filter(Boolean);
-        if (channelList.length > 0 && !channelList.includes(message.channel.id)) {
-            return;
-        }
+        const channelConfig = config.channel_overrides?.[message.channelId] || {};
+        const aiEnabled = normalizeBool(channelConfig.ai_enabled, true);
+        if (!aiEnabled) return false;
 
-        // Check if mention is required
-        const requireMention = normalizeBool(cfg.ai_require_mention, true);
-        const isMentioned = message.mentions.has(message.client.user) || 
-                          (message.reference && message.reference.messageId);
-        
-        if (requireMention && !isMentioned) {
-            return;
-        }
+        // Check if the message is from a bot or is a command
+        if (message.author.bot || message.content.startsWith('!')) return false;
 
         // Check cooldown
-        const cooldownKey = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
-        const cooldownMs = (cfg.ai_cooldown_seconds || 10) * 1000;
-        const now = Date.now();
+        const cooldownKey = `${message.guildId}:${message.channelId}:${message.author.id}`;
+        const lastReply = aiCooldowns.get(cooldownKey) || 0;
+        const cooldownTime = (channelConfig.ai_cooldown || 5) * 60 * 1000; // Default 5 minutes
         
-        if (aiCooldowns.has(cooldownKey)) {
-            const lastTime = aiCooldowns.get(cooldownKey);
-            if (now - lastTime < cooldownMs) {
-                return;
+        if (Date.now() - lastReply < cooldownTime) {
+            return false;
+        }
+
+        // Check if the bot is mentioned or if it's a reply to the bot
+        const isMentioned = message.mentions.users.has(message.client.user.id);
+        const isReplyToBot = message.reference && 
+                           message.reference.messageId && 
+                           message.channel.messages.cache.get(message.reference.messageId)?.author.id === message.client.user.id;
+
+        if (!isMentioned && !isReplyToBot) {
+            // If not mentioned and not a reply, check if we should reply randomly
+            const replyChance = parseFloat(channelConfig.ai_reply_chance || '0.1');
+            if (Math.random() > replyChance) {
+                return false;
             }
         }
-        aiCooldowns.set(cooldownKey, now);
 
-        // Process AI response
-        const prompt = message.content.replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '').trim();
-        if (!prompt) return;
-
-        const reply = await generateReply({
-            messages: [{ role: 'user', content: prompt }],
-            model: cfg.ai_model || undefined,
-            temperature: cfg.ai_temperature !== undefined ? parseFloat(cfg.ai_temperature) : 0.7,
-            maxTokens: cfg.ai_max_tokens ? parseInt(cfg.ai_max_tokens) : undefined,
-            provider: cfg.ai_provider || 'openai',
-            endpoint: cfg.ai_openai_base_enc ? decryptString(cfg.ai_openai_base_enc) : undefined,
-            apiKey: cfg.ai_openai_key_enc ? decryptString(cfg.ai_openai_key_enc) : undefined
-        });
-
+        // Generate and send the reply
+        await message.channel.sendTyping();
+        const reply = await generateReply(message, db, config);
         if (reply) {
-            await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
+            await message.reply(reply);
+            aiCooldowns.set(cooldownKey, Date.now());
+            return true;
         }
-    } catch (e) {
-        console.error('❌ [AI] Error in maybeHandleAIReply:', e);
+        return false;
+    } catch (error) {
+        console.error('Error in AI reply handler:', error);
+        return false;
     }
 }
 
 export default {
     name: 'messageCreate',
+    once: false,
+
     async execute(message) {
         if (message.author.bot) return;
 
@@ -93,159 +93,169 @@ export default {
         if (!db) return;
 
         try {
-            // Handle anti-invite
-            await handleAntiInvite(message, db);
-            
-            // Handle anti-spam
-            const spamHandled = await handleAntiSpam(message, db);
-            
-            // Skip further processing if spam was handled
-            if (spamHandled) return;
-            
             // Handle counting game
             await handleCountingMessage(message);
 
+            // Handle anti-invite
+            // Handle anti-spam
+            await handleAntiSpam(message, db);
+
+            // Add XP for message
             const config = safeDbOperation(() => {
-                const stmt = db.prepare('SELECT levels_enabled, level_up_channel, xp_per_message, message_cooldown FROM guild_config WHERE guild_id = ?');
+                const stmt = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?");
                 return stmt.get(message.guild.id);
             });
-
             if (config && config.levels_enabled) {
                 await addXPToUser(message.author.id, message.guild.id, db, config, message);
             }
-            
-            // Simple tool-calling: detect Dutch intent to create a ticket
-            const contentLower = String(message.content || '').toLowerCase();
-            const ticketIntent = /\b(maak|open|start)\b.*\bticket\b/.test(contentLower) || /\bticket\b.*\b(aanmaken|maken|openen|starten)\b/.test(contentLower);
-            if (ticketIntent) {
-                try {
-                    const cfgTicket = getTicketConfig(db, message.guild.id) || { thread_mode: 0 };
-                    // Try to infer a simple ticket type from message (fallback 'support')
-                    let ticketType = 'support';
-                    if (/bug|fout|error/.test(contentLower)) ticketType = 'bug-report';
-                    else if (/report|meld/.test(contentLower)) ticketType = 'player-report';
-                    else if (/unban/.test(contentLower)) ticketType = 'unban';
-                    else if (/unmute/.test(contentLower)) ticketType = 'unmute';
 
-                    // Create a proper interaction-like object
-                    const fakeInteraction = {
-                        guild: message.guild,
-                        user: message.author,
-                        member: message.member,
-                        client: message.client,
-                        channel: message.channel,
-                        reply: async (options) => {
-                            return message.channel.send(options);
-                        },
-                        // Add required properties for interaction
-                        isCommand: () => false,
-                        isButton: () => false,
-                        isModalSubmit: () => false,
-                        isContextMenu: () => false,
-                        isSelectMenu: () => false,
-                        isAutocomplete: () => false,
-                        isMessageComponent: () => false,
-                        isRepliable: () => false,
-                        inGuild: () => true,
-                        inCachedGuild: () => true,
-                        inRawGuild: () => true,
-                        inGuildCache: () => true
-                    };
-                    
-                    const result = await createTicketChannelOrThread(fakeInteraction, db, cfgTicket, ticketType, null);
-
-                    // Save ticket to database so buttons know the owner
-                    try {
-                        const insertWithType = db.prepare(`
-                            INSERT INTO tickets (guild_id, user_id, channel_id, status, ticket_type)
-                            VALUES (?, ?, ?, 'open', ?)
-                        `);
-                        insertWithType.run(message.guild.id, message.author.id, result.channel.id, ticketType);
-                    } catch (eIns1) {
-                        try {
-                            const insertBasic = db.prepare(`
-                                INSERT INTO tickets (guild_id, user_id, channel_id, status)
-                                VALUES (?, ?, ?, 'open')
-                            `);
-                            insertBasic.run(message.guild.id, message.author.id, result.channel.id);
-                        } catch (eIns2) {
-                            console.error('❌ [AI] failed to persist ticket record:', eIns1?.message || eIns1, eIns2?.message || eIns2);
-                        }
-                    }
-
-                    const place = result?.isThread ? `thread <#${result.channel.id}>` : `kanaal <#${result.channel.id}>`;
-                    await message.channel.send(`🎫 Ticket aangemaakt in ${place}.`);
-                    
-                    // Cooldown after tool to avoid double fire
-                    const key = `${message.guild.id}:${message.channel.id}:${message.author.id}`;
-                    aiCooldowns.set(key, Date.now());
-                    return; // Exit after handling ticket creation
-                } catch (e) {
-                    console.error('❌ [AI] ticket tool failed:', e);
-                    await message.channel.send('Sorry, het aanmaken van een ticket is mislukt. Probeer het opnieuw of gebruik /ticket.').catch(() => {});
-                    return; // Exit after error
-                }
-            }
-            // AI auto-responder (basic)
+            // Handle AI replies
             await maybeHandleAIReply(message, db);
-            
+
         } catch (error) {
-            console.error('❌ [messageCreate] Error processing message:', error);
+            console.error('Error in messageCreate event:', error);
         }
     }
 };
 
-// Anti-invite handler
-async function handleAntiInvite(message, db) {
+/**
+ * Handle ticket creation via command
+ */
+async function handleTicketCommand(message, ticketType, db) {
     try {
-        // Get guild config
         const config = safeDbOperation(() => {
-            const stmt = db.prepare('SELECT anti_invite_enabled, anti_invite_default_state, anti_invite_channels, anti_invite_exempt_channels, anti_invite_exempt_roles FROM guild_config WHERE guild_id = ?');
+            const stmt = db.prepare(`
+                SELECT * FROM ticket_config
+                WHERE guild_id = ? AND (command_enabled = 1 OR command_enabled IS NULL)
+            `);
             return stmt.get(message.guild.id);
         });
+
+        if (!config) {
+            return message.reply('Ticket system is not configured for this server.');
+        }
+
+        // Check if ticket type exists and is enabled
+        const ticketConfig = safeDbOperation(() => {
+            const stmt = db.prepare(`
+                SELECT * FROM ticket_types
+                WHERE guild_id = ? AND name = ? AND enabled = 1
+            `);
+            return stmt.get(message.guild.id, ticketType);
+        });
+
+        if (!ticketConfig) {
+            const availableTypes = safeDbOperation(() => {
+                const stmt = db.prepare(`
+                    SELECT name FROM ticket_types
+                    WHERE guild_id = ? AND enabled = 1
+                `);
+                return stmt.all(message.guild.id);
+            });
+
+            const typesList = availableTypes.length > 0
+                ? `Available types: ${availableTypes.map(t => `\`${t.name}\``).join(', ')}`
+                : 'No ticket types are currently available.';
+
+            return message.reply(`Invalid ticket type. ${typesList}`);
+        }
+
+        // Check if user has any open tickets of this type
+        const existingTicket = safeDbOperation(() => {
+            const stmt = db.prepare(`
+                SELECT channel_id FROM tickets
+                WHERE guild_id = ? AND creator_id = ? AND type = ? AND status = 'open'
+            `);
+            return stmt.get(message.guild.id, message.author.id, ticketType);
+        });
+
+        if (existingTicket) {
+            return message.reply(`You already have an open ticket of this type: <#${existingTicket.channel_id}>`);
+        }
+
+        // Create the ticket using the ticket system utility
+        const interaction = {
+            guild: message.guild,
+            user: message.author,
+            member: message.member,
+            reply: message.reply.bind(message),
+            channel: message.channel
+        };
         
-        // If anti-invite is not enabled, skip
-        if (!config || !config.anti_invite_enabled) return;
+        const result = await createTicketChannel(interaction, ticketType);
         
-        // Check if user is exempt
-        const exemptRoles = config.anti_invite_exempt_roles ? JSON.parse(config.anti_invite_exempt_roles) : [];
-        const isExemptByRole = message.member.roles.cache.some(role => exemptRoles.includes(role.id));
-        if (isExemptByRole) return false;
-        
-        // Check if channel is exempt
-        const exemptChannels = config.anti_invite_exempt_channels ? JSON.parse(config.anti_invite_exempt_channels) : [];
-        if (exemptChannels.includes(message.channel.id)) return false;
-        
-        // Check if channel is specifically included (if any are specified)
-        const specificChannels = config.anti_invite_channels ? JSON.parse(config.anti_invite_channels) : [];
-        if (specificChannels.length > 0 && !specificChannels.includes(message.channel.id)) {
-            // If specific channels are set, only apply to those channels
-            return false;
+        if (!result.success) {
+            return message.reply(result.message || 'Failed to create ticket. Please try again later.');
         }
         
+        const ticketChannel = result.channel;
+
+        // The ticket is already saved in the database by createTicketChannel
+        // Send ticket message
+        const embed = new EmbedBuilder()
+            .setColor('#5865F2')
+            .setTitle(`Ticket: ${ticketConfig.display_name || ticketType}`)
+            .setDescription(ticketConfig.welcome_message || 'Please describe your issue and a staff member will assist you shortly.')
+            .addFields(
+                { name: 'Created by', value: `${message.author}`, inline: true },
+                { name: 'Type', value: ticketConfig.display_name || ticketType, inline: true }
+            )
+            .setFooter({ text: 'Use the close button below when finished.' })
+            .setTimestamp();
+
+        const closeButton = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('close_ticket')
+                    .setLabel('Close Ticket')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('🔒')
+            );
+
+        await ticketChannel.send({
+            content: `${message.author} ${config.support_role_id ? `<@&${config.support_role_id}>` : ''}`,
+            embeds: [embed],
+            components: [closeButton]
+        });
+
+        await message.reply(`Created your ticket: ${ticketChannel}`);
+
+    } catch (error) {
+        console.error('Error creating ticket from command:', error);
+        message.reply('An error occurred while creating your ticket. Please try again later.');
+    }
+}
+
+/**
+ * Anti-invite handler
+ */
+async function handleAntiInvite(message, db) {
+    try {
+        const config = safeDbOperation(() => {
+            const stmt = db.prepare("SELECT * FROM guild_config WHERE guild_id = ?");
+            return stmt.get(message.guild.id);
+        });
+        if (!config?.anti_invite_enabled) return;
+
+        // Check if user has permission to bypass
+        if (message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+            return;
+        }
+
         // Check for Discord invite links
-        const inviteRegex = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite)\/[\w\d]{2,}/gi;
+        const inviteRegex = /(https?:\/\/)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com\/invite|discord\.com\/invite)\/[^\s/]+?(?=\b)/gi;
         if (inviteRegex.test(message.content)) {
-            // Delete the message
-            try {
-                await message.delete();
-                
-                // Send warning message
-                const warnMsg = await message.channel.send({
-                    content: `${message.author}, het plaatsen van invite links is niet toegestaan!`,
-                    allowedMentions: { repliedUser: true }
-                });
-                
-                // Delete warning after 5 seconds
-                setTimeout(() => {
-                    warnMsg.delete().catch(() => {});
-                }, 5000);
-            } catch (error) {
-                console.warn(`[AntiInvite] Could not delete message or send warning: ${error.message}`);
-            }
+            await message.delete().catch(console.error);
+            
+            const warning = await message.channel.send({
+                content: `${message.author}, please don't post invite links.`
+            });
+            
+            // Delete warning after 5 seconds
+            setTimeout(() => warning.delete().catch(console.error), 5000);
         }
     } catch (error) {
-        console.error('❌ [AntiInvite] Error handling anti-invite:', error);
+        console.error('Error in anti-invite handler:', error);
     }
 }
 
@@ -349,7 +359,7 @@ async function addXPToUser(userId, guildId, db, config, message) {
         
         const result = safeTransaction(() => {
             const now = new Date();
-            
+
             const selectStmt = db.prepare('SELECT * FROM user_levels WHERE user_id = ? AND guild_id = ?');
             let userData = selectStmt.get(userId, guildId);
             

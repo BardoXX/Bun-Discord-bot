@@ -1,5 +1,4 @@
 import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
-import { ensureFeatureEnabled } from '../utils/economyFeatures.js';
 
 export default {
   data: new SlashCommandBuilder()
@@ -54,7 +53,6 @@ export default {
       return;
     }
 
-    if (!(await ensureFeatureEnabled(interaction, 'eco', 'eco'))) return;
     const db = interaction.client.db;
     const guildId = interaction.guild.id;
     const sub = interaction.options.getSubcommand();

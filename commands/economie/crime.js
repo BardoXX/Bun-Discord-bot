@@ -15,8 +15,6 @@ export default {
         .setDescription('Pleeg een misdaad om geld te verdienen (risicovol!) (cooldown: 2 uur)'),
         
     async execute(interaction) {
-        const { ensureFeatureEnabled } = await import('../utils/economyFeatures.js');
-        if (!(await ensureFeatureEnabled(interaction, 'crime', 'crime'))) return;
         await interaction.deferReply(); 
 
         const db = interaction.client.db;

@@ -1,6 +1,5 @@
 // commands/economie/inventory.js
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { ensureFeatureEnabled } from '../utils/economyFeatures.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -24,7 +23,6 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
-        if (!(await ensureFeatureEnabled(interaction, 'inventory', 'inventory'))) return;
         const targetUser = interaction.options.getUser('user') || interaction.user;
         const filter = interaction.options.getString('filter');
         const db = interaction.client.db;

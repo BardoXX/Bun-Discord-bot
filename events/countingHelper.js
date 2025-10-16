@@ -1,66 +1,98 @@
 import { EmbedBuilder } from 'discord.js';
 import { safeDbOperation } from '../commands/utils/database.js';
 
+// Utility function to add delays between reactions to avoid rate limits
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Utility function to safely add reactions with rate limit handling
+async function safeReact(message, emoji, delayMs = 0) {
+    if (delayMs > 0) {
+        await delay(delayMs);
+    }
+
+    return message.react(emoji).catch(err => {
+        if (err.code !== 10008) { // Unknown message error
+            if (err.name === 'RateLimitError') {
+                console.warn(`[counting] Rate limit hit for ${emoji} reaction, skipping`);
+            } else {
+                console.error(`[counting] Error reacting with ${emoji}:`, err);
+            }
+        } else {
+            console.warn('[counting] Message already deleted, skipping reaction.');
+        }
+        return null;
+    });
+}
+
 export async function handleCountingMessage(message) {
     // Skip if it's a bot message
     if (message.author.bot) return;
-    
+
     const db = message.client.db;
     const guildId = message.guild.id;
     const channelId = message.channel.id;
 
-    // Get counting configuration using safe database operation
-    const config = safeDbOperation(() => {
-        const stmt = db.prepare('SELECT counting_channel, counting_number FROM guild_config WHERE guild_id = ?');
-        return stmt.get(guildId);
-    });
-
-    // Check if this message is in the counting channel
-    if (!config || !config.counting_channel || config.counting_channel !== channelId) {
-        return; // Not a counting channel
-    }
-
-    console.log(`🔢 [counting] Message in counting channel: "${message.content}" by ${message.author.tag}`);
-    console.log(`📊 [counting] Current config from database: counting_channel=${config.counting_channel}, counting_number=${config.counting_number}`);
-
-    const currentNumber = Number(config.counting_number || 0);
-    const expectedNumber = currentNumber + 1;
-    const messageNumber = parseInt(message.content.trim());
-
-    // Check if the message is a valid number
-    if (isNaN(messageNumber) || message.content.trim() !== messageNumber.toString()) {
-        console.log(`❌ [counting] Invalid number format: "${message.content}"`);
-        await handleWrongCount(message, expectedNumber, `Het bericht moet alleen het getal **${expectedNumber}** bevatten!`);
-        return;
-    }
-
-    // Check if it's the correct number
-    if (messageNumber !== expectedNumber) {
-        console.log(`❌ [counting] Wrong number: expected ${expectedNumber}, got ${messageNumber}`);
-        await handleWrongCount(message, expectedNumber, `Fout! Het juiste getal was **${expectedNumber}**, maar je typte **${messageNumber}**.`);
-        return;
-    }
-
-    // Correct number! Update the database using safe operation
     try {
-        const updateResult = safeDbOperation(() => {
-            const stmt = db.prepare('UPDATE guild_config SET counting_number = ? WHERE guild_id = ?');
-            return stmt.run(messageNumber, guildId);
+        // Get counting configuration using safe database operation
+        const config = safeDbOperation(() => {
+            const stmt = db.prepare('SELECT counting_channel, counting_number, last_counting_user FROM guild_config WHERE guild_id = ?');
+            return stmt.get(guildId);
         });
+
+        // Check if this message is in the counting channel
+        if (!config || !config.counting_channel || config.counting_channel !== channelId) {
+            return; // Not a counting channel
+        }
+
+        console.log(`🔢 [counting] Message in counting channel: "${message.content}" by ${message.author.tag}`);
+        console.log(`📊 [counting] Current config from database: counting_channel=${config.counting_channel}, counting_number=${config.counting_number}, last_counting_user=${config.last_counting_user}`);
+
+        const currentNumber = Number(config.counting_number || 0);
+        const expectedNumber = currentNumber + 1;
+        const messageNumber = parseInt(message.content.trim());
+
+        // Validate input more thoroughly
+        if (isNaN(messageNumber) || message.content.trim() !== messageNumber.toString()) {
+            console.log(`❌ [counting] Invalid number format: "${message.content}"`);
+            await handleWrongCount(message, expectedNumber, `Het bericht moet alleen het getal **${expectedNumber}** bevatten!`);
+            return;
+        }
+
+        // Check if it's the correct number
+        if (messageNumber !== expectedNumber) {
+            console.log(`❌ [counting] Wrong number: expected ${expectedNumber}, got ${messageNumber}`);
+            await handleWrongCount(message, expectedNumber, `Fout! Het juiste getal was **${expectedNumber}**, maar je typte **${messageNumber}**.`);
+            return;
+        }
+
+        // Check if user already counted last (1 count per user rule)
+        if (config.last_counting_user === message.author.id) {
+            console.log(`❌ [counting] User ${message.author.tag} already counted last, rejecting duplicate count`);
+            await handleWrongCount(message, expectedNumber, `Je hebt het vorige getal al geteld! Laat iemand anders **${expectedNumber}** typen.`);
+            return;
+        }
+
+        // Correct number! Update the database using safe operation
+        const updateResult = safeDbOperation(() => {
+            const stmt = db.prepare('UPDATE guild_config SET counting_number = ?, last_counting_user = ? WHERE guild_id = ?');
+            return stmt.run(messageNumber, message.author.id, guildId);
+        });
+
+        if (!updateResult || updateResult.changes === 0) {
+            console.error('❌ [counting] Failed to update counting number in database');
+            await safeReact(message, '❌');
+            return;
+        }
 
         console.log(`✅ [counting] Correct number ${messageNumber} by ${message.author.tag}`);
-        console.log(`📊 [counting] Database update result: changes=${updateResult ? updateResult.changes : 'unknown'}`);
+        console.log(`📊 [counting] Database update result: changes=${updateResult.changes}`);
 
         // Add a reaction to show it's correct
-        await message.react('✅').catch(err => {
-            if (err.code !== 10008) { // Unknown message error
-                console.error('[counting] Error reacting to message:', err);
-            } else {
-                console.warn('[counting] Message already deleted, skipping reaction.');
-            }
-        });
+        await safeReact(message, '✅');
 
-        // Special milestones
+        // Special milestones with rate limit protection
         if (messageNumber % 100 === 0) {
             const embed = new EmbedBuilder()
                 .setColor('#ffd700')
@@ -75,27 +107,15 @@ export async function handleCountingMessage(message) {
 
             await message.channel.send({ embeds: [embed] });
         } else if (messageNumber % 50 === 0) {
-            await message.react('🎊').catch(err => {
-                if (err.code !== 10008) { // Unknown message error
-                    console.error('[counting] Error reacting to message:', err);
-                } else {
-                    console.warn('[counting] Message already deleted, skipping reaction.');
-                }
-            });
+            await safeReact(message, '🎊', 100); // Small delay to avoid rate limits
         } else if (messageNumber % 25 === 0) {
-            await message.react('🎉').catch(err => {
-                if (err.code !== 10008) { // Unknown message error
-                    console.error('[counting] Error reacting to message:', err);
-                } else {
-                    console.warn('[counting] Message already deleted, skipping reaction.');
-                }
-            });
+            await safeReact(message, '🎉', 200); // Slightly longer delay for multiple reactions
         }
 
         // Economy: counting rewards
         try {
             const rewardCfg = safeDbOperation(() => {
-                const stmt = db.prepare(`SELECT 
+                const stmt = db.prepare(`SELECT
                     COALESCE(counting_reward_enabled, 0) AS enabled,
                     COALESCE(counting_reward_amount, 5) AS amount,
                     COALESCE(counting_reward_goal_interval, 10) AS interval,
@@ -124,7 +144,7 @@ export async function handleCountingMessage(message) {
                               .run(amount, guildId, message.author.id);
                         });
                         // React with coin to indicate payout
-                        await message.react('💰').catch(() => {});
+                        await safeReact(message, '💰');
                     }
                 }
             }
@@ -133,14 +153,8 @@ export async function handleCountingMessage(message) {
         }
 
     } catch (error) {
-        console.error('❌ [counting] Error updating counting number:', error);
-        await message.react('❌').catch(err => {
-            if (err.code !== 10008) { // Unknown message error
-                console.error('[counting] Error reacting to message:', err);
-            } else {
-                console.warn('[counting] Message already deleted, skipping reaction.');
-            }
-        });
+        console.error('❌ [counting] Error in handleCountingMessage:', error);
+        await safeReact(message, '❌');
     }
 }
 
@@ -160,7 +174,7 @@ async function handleWrongCount(message, expectedNumber, reason) {
         // Send error message
         const embed = new EmbedBuilder()
             .setColor('#ff0000')
-            .setTitle(' Verkeerd Getal!')
+            .setTitle('❌ Verkeerd Getal!')
             .setDescription(reason)
             .addFields(
                 { name: 'Volgend Getal', value: `**${expectedNumber}**`, inline: true },
