@@ -50,7 +50,7 @@ Welcome to the **Bun Discord Bot**\! This bot is built with **Bun**, a fast Java
 ---
 
 ### 🎟️ Ticketsysteem
-- `/config tickets` — dit opent het ticket model
+- `/tickets config` — dit opent het ticket model
 
 ---
 
